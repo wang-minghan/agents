@@ -1,4 +1,0 @@
-input: input/本体对象关系列表.csv
-output_dir: output
-max_rounds: 3
-llm_config: configs/llm.yaml

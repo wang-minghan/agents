@@ -1,0 +1,43 @@
+# Restaurant recommender agent config
+radius_km: 3.0
+top_k_per_range: 5
+min_rating: 0.0
+min_reviews: 0
+price_mode: per_person # per_person | total
+price_ranges:
+  - label: budget
+    min: 0
+    max: 50
+  - label: mid
+    min: 50
+    max: 120
+  - label: premium
+    min: 120
+    max: 9999
+weights:
+  rating: 1.0
+  reviews: 0.3
+  distance: 0.4
+  price_fit: 0.2
+  party_fit: 0.2
+  recent_food: 1.0
+  recent_restaurant: 1.5
+recent_decay:
+  exclude_days: 2
+  half_life_days: 5
+amap:
+  config_path: "configs/amap.yaml"
+  api_key: ""
+  mode: driving # driving | walking | transit
+  strategy: 10
+  place_keywords: "餐厅"
+  place_types: "050000"
+supabase:
+  config_path: "configs/supabase.yaml"
+  url: ""
+  service_role_key: ""
+  anon_key: ""
+  tables:
+    recent_foods: "recent_foods"
+    recent_restaurants: "recent_restaurants"
+  recent_limit: 50

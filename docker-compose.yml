@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  flowise:
+    image: flowiseai/flowise:latest
+    container_name: flowise
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - FLOWISE_USERNAME=admin
+      - FLOWISE_PASSWORD=admin
+    volumes:
+      - ./data/flowise:/root/.flowise

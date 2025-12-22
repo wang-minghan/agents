@@ -16,7 +16,6 @@ from typing import Any
 import os
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-
 import yaml
 
 

@@ -1,9 +1,0 @@
-[langsmith] enabled=True project=excel_to_csv endpoint=https://api.smith.langchain.com api_key=lsv2...025d
-[excel_to_csv] start file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] initial_review done file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] final_review round=1 file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] feedback_plan round=1 file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] final_review round=2 file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] feedback_plan round=2 file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] loop_detected auto_approve file=本体对象关系列表.csv sheet=本体对象关系列表
-[excel_to_csv] done file=本体对象关系列表.csv sheet=本体对象关系列表 out=本体对象关系_本体对象关系列表_v1.csv

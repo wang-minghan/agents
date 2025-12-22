@@ -4,7 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from ui.theme import inject_global_styles
+from ui.theme.theme import inject_global_styles
 from ui.views.excel_to_csv import render_excel_to_csv
 from ui.views.food_picks import render_food_picks
 

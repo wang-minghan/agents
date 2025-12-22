@@ -1,0 +1,3 @@
+# Excel to CSV agent config
+input_dir: "<input_dir>"
+output_dir: "<output_dir>"

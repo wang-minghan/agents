@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Geolocation Component</title>
+    <script>
+      const STREAMLIT_READY = "streamlit:componentReady";
+      const STREAMLIT_RENDER = "streamlit:render";
+      const STREAMLIT_SET_VALUE = "streamlit:setComponentValue";
+      const STREAMLIT_SET_HEIGHT = "streamlit:setFrameHeight";
+      const API_VERSION = 1;
+      let requested = false;
+
+      function sendMessage(type, data) {
+        window.parent.postMessage(
+          Object.assign({ isStreamlitMessage: true, type }, data || {}),
+          "*"
+        );
+      }
+
+      function setFrameHeight(height) {
+        sendMessage(STREAMLIT_SET_HEIGHT, { height: height ?? 0 });
+      }
+
+      function sendValue(value) {
+        sendMessage(STREAMLIT_SET_VALUE, { value, dataType: "json" });
+        setFrameHeight(0);
+      }
+
+      function requestGeo(args) {
+        if (requested) return;
+        requested = true;
+        const opts = {
+          enableHighAccuracy: args.enableHighAccuracy !== false,
+          timeout: args.timeout || 15000,
+          maximumAge: args.maximumAge || 0,
+        };
+        const geo = (window.parent && window.parent.navigator && window.parent.navigator.geolocation)
+          || navigator.geolocation;
+        if (!geo) {
+          sendValue({ status: "unavailable", message: "geolocation unsupported" });
+          return;
+        }
+        geo.getCurrentPosition(
+          (pos) => {
+            sendValue({
+              status: "success",
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+              timestamp: pos.timestamp,
+            });
+          },
+          (err) => {
+            const status = err && err.code === 1
+              ? "denied"
+              : err && err.code === 2
+                ? "unavailable"
+                : "timeout";
+            sendValue({ status, code: err && err.code, message: err && err.message });
+          },
+          opts
+        );
+      }
+
+      window.addEventListener("message", (event) => {
+        const data = event.data || {};
+        if (data.type === STREAMLIT_RENDER) {
+          setFrameHeight(0);
+          requestGeo(data.args || {});
+        }
+      });
+
+      sendMessage(STREAMLIT_READY, { apiVersion: API_VERSION });
+      setFrameHeight(0);
+      requestGeo({});
+    </script>
+  </head>
+  <body>
+    <div></div>
+  </body>
+</html>

@@ -20,6 +20,10 @@ class SharedMemoryStore:
             self.role_outputs[role] = []
         self.role_outputs[role].append(content)
 
+    def add_saved_files(self, file_paths: List[str]):
+        for path in file_paths:
+            self.saved_files[path] = "saved"
+
     def get_all_outputs(self) -> Dict[str, List[str]]:
         return self.role_outputs
 
@@ -87,4 +91,3 @@ class SharedMemoryStore:
         self.saved_files.clear()
         self.qa_feedback.clear()
         self.global_context.clear()
-

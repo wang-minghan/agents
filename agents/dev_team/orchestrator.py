@@ -96,6 +96,9 @@ class Orchestrator:
             return []
 
         print(f"\n🚀 启动 TDD 协作流程 (最大轮次: {max_rounds})...")
+        collab_cfg = self.config.get("collaboration", {})
+        force_qa_on_success = collab_cfg.get("force_qa_on_success", False)
+        post_success_qa_rounds = int(collab_cfg.get("post_success_qa_rounds", 0))
 
         for round_num in range(1, max_rounds + 1):
             print(f"\n🔄 --- 第 {round_num} 轮迭代 ---")
@@ -106,7 +109,9 @@ class Orchestrator:
                     agent.run() 
                     # Save files from agent output
                     output_content = self.shared_memory.get_all_outputs()[agent.role_name][-1]
-                    save_files_from_content(output_content, self.output_dir)
+                    saved_files = save_files_from_content(output_content, self.output_dir)
+                    if saved_files:
+                        self.shared_memory.add_saved_files(saved_files)
                     print(f"    ✅ [{agent.role_name}] 完成工作")
                 except Exception as e:
                     print(f"    ❌ [{agent.role_name}] 执行出错: {str(e)}")
@@ -118,10 +123,23 @@ class Orchestrator:
             test_results = self.code_executor.run_tests(str(self.output_dir))
             
             self.shared_memory.global_context["latest_test_results"] = test_results
-            print(f"    📋 测试结果摘要: {test_results.splitlines()[0]}")
+            summary_lines = test_results.splitlines()
+            summary = summary_lines[0] if summary_lines else "No test output."
+            print(f"    📋 测试结果摘要: {summary}")
             
             if "FAIL" not in test_results and "Error" not in test_results and "SKIPPED" not in test_results:
                 print("    ✨ 自动化测试全部通过！")
+                if self.qa_agent and (force_qa_on_success or post_success_qa_rounds > 0):
+                    qa_rounds = post_success_qa_rounds if post_success_qa_rounds > 0 else 1
+                    for _ in range(qa_rounds):
+                        print(f"\n🔍 [QA: {self.qa_agent.role_name}] 进行通过后的审查...")
+                        qa_feedback = self.qa_agent.run()
+                        self.shared_memory.add_qa_feedback({
+                            "round": round_num,
+                            "test_status": "Passed",
+                            "feedback": qa_feedback
+                        })
+                        print("    📝 QA 反馈已记录")
                 print("    >>> 提前结束协作循环。")
                 break
 
@@ -138,12 +156,3 @@ class Orchestrator:
                 print(f"    📝 QA 反馈已记录")
 
         return self.shared_memory.get_all_outputs()
-
-    def _run_automated_tests(self) -> str:
-        """
-        Deprecated. Use self.code_executor.run_tests instead.
-        Kept for backward compatibility if any external callers use it, but 
-        internal logic now uses code_executor.
-        """
-        return self.code_executor.run_tests(str(self.output_dir))
-

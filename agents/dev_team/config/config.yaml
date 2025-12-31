@@ -1,8 +1,12 @@
 roles:
   engineer:
-    prompt_path: "agents/dev_team/prompts/engineer.md"
+    prompt_path: "agents/dev_team/prompts/engineer.txt"
   qa:
-    prompt_path: "agents/dev_team/prompts/qa.md"
+    prompt_path: "agents/dev_team/prompts/qa.txt"
 
 task_planner:
   output_path: "agents/task_planner/output/jd.json"  # 假设 task_planner 的输出路径
+
+collaboration:
+  force_qa_on_success: false
+  post_success_qa_rounds: 0

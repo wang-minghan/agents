@@ -8,7 +8,8 @@ This directory contains individual AI agents, each designed for a specific purpo
 | :--- | :--- | :--- |
 | **excel_to_csv** | Converts Excel files to CSV format | Active |
 | **restaurant_recommender** | Recommends restaurants based on location, price, and history | Active |
-| **task_planner** | An intelligent planning agent that breaks down requirements into tasks and JDs, with validation loops. | Active |
+| **task_planner** | Breaks down requirements into tasks and JDs, with validation loops, output schema checks, and resume via planner_state. | Active |
+| **dev_team** | Orchestrates multi-agent engineering + QA collaboration with shared memory, automated test gating, and optional post-success QA review. | Active |
 
 ## Creating a New Agent
 

@@ -1,3 +1,9 @@
 .venv
 .deps
 configs/*
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+output/
+agents/**/output/

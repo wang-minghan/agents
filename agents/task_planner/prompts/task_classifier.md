@@ -12,7 +12,10 @@
 # 输出格式
 请以 JSON 格式输出，包含以下字段：
 - `tasks`: 任务列表，每个任务包含 `id`, `name`, `description`, `role_needed`, `estimated_effort`。
-- `roles`: 角色列表，每个角色包含 `role_name`, `initial_jd` (包含职责和基本要求)。
+- `roles`: 角色列表，每个角色包含:
+    - `role_name`: 角色名称 (e.g., "Frontend Engineer").
+    - `role_type`: 角色类型，必须为以下之一: ["ENGINEER", "QA", "PM", "DESIGNER"]. (默认为 "ENGINEER").
+    - `initial_jd`: 初步职位描述 (包含职责和基本要求)。
 
 # 示例
 输入:

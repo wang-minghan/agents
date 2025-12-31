@@ -1,0 +1,8 @@
+roles:
+  engineer:
+    prompt_path: "agents/dev_team/prompts/engineer.md"
+  qa:
+    prompt_path: "agents/dev_team/prompts/qa.md"
+
+task_planner:
+  output_path: "agents/task_planner/output/jd.json"  # 假设 task_planner 的输出路径

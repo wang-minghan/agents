@@ -13,13 +13,14 @@ def build_validator_chain(config: Dict[str, Any]):
     api_base = role_config.get("api_base")
     
     llm = ChatOpenAI(
-        model=model_name, 
+        model=model_name,
         temperature=temperature,
-        openai_api_key=api_key,
-        openai_api_base=api_base
+        api_key=api_key,
+        base_url=api_base
     )
     
-    prompt_path = Path("agents/task_planner/prompts/jd_validator.md")
+    agent_root = Path(config.get("agent_root", "."))
+    prompt_path = agent_root / "prompts/jd_validator.md"
     with open(prompt_path, "r", encoding="utf-8") as f:
         template = f.read()
     

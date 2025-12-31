@@ -9,33 +9,27 @@ from agents.task_planner.chains.classifier_chain import build_classifier_chain
 from agents.task_planner.chains.optimizer_chain import build_optimizer_chain
 from agents.task_planner.chains.validator_chain import build_validator_chain
 
-def load_config(config_path: str = "configs/task_planner.yaml") -> Dict[str, Any]:
-    # 加载基础任务规划配置
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+
+from agents.common import load_config as common_load_config
+
+def load_config(config_path: str = None) -> Dict[str, Any]:
+    # Wrapper to maintain compatible signature but use common logic with correct base
+    base_dir = Path(__file__).parent.resolve()
+    config = common_load_config(config_path, base_dir)
     
-    # 加载统一的 LLM 配置
-    llm_config_path = "configs/llm.yaml"
-    if Path(llm_config_path).exists():
-        with open(llm_config_path, "r", encoding="utf-8") as f:
-            llm_settings = yaml.safe_load(f)
-            active_profile = llm_settings.get("active_profile", "grok")
-            profile = llm_settings.get("profiles", {}).get(active_profile, {})
-            
-            # 将 LLM 配置注入到每个角色的配置中，如果角色没有指定则使用默认
-            for role_name in config.get("roles", {}):
-                role_cfg = config["roles"][role_name]
-                if "model" not in role_cfg:
-                    role_cfg["model"] = profile.get("model")
-                if "api_key" not in role_cfg:
-                    role_cfg["api_key"] = profile.get("api_key")
-                if "api_base" not in role_cfg:
-                    role_cfg["api_base"] = profile.get("api_base")
-    
+    # Inject agent_root for relative path resolution in chains if not present
+    if "agent_root" not in config:
+        config["agent_root"] = str(base_dir)
+        
     return config
 
 def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     user_input = input_data.get("user_input")
+    execution_feedback = input_data.get("execution_feedback")
+    
+    if execution_feedback:
+        user_input += f"\n\n[Pre-existing Execution Feedback]: {execution_feedback}"
+
     max_iterations = config.get("workflow", {}).get("max_iterations", 3)
     
     # 1. 需求分析
@@ -55,8 +49,13 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
     
     # 迭代优化流程
     iteration = 0
-    final_jds = []
+    # Initialize current JDs with initial JDs
+    current_role_jds = {role["role_name"]: role["initial_jd"] for role in roles}
+    
     validation_result = {"passed": False}
+    # 初始化反馈 (Global)
+    global_feedback = "无 (第一轮)"
+    role_specific_feedbacks = {}
     
     while iteration < max_iterations:
         iteration += 1
@@ -66,19 +65,40 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         optimizer = build_optimizer_chain(config)
         optimized_jds = []
         
+        # Use a dictionary to store optimized JDs for the next iteration
+        next_round_jds = {}
+
         for role in roles:
-            # 如果是第一轮，使用初始JD；否则（理论上可以基于反馈微调，这里简化处理，还是基于初始JD优化）
-            # 在更复杂的实现中，可以将上一轮的反馈作为输入传给 optimizer
+            role_name = role["role_name"]
+            # INPUT for optimizer: Use the JD from the CURRENT state (updated in previous loop), not the initial one
+            current_jd_content = current_role_jds.get(role_name, "")
+            
+            # Construct personalized feedback
+            # Feedback = Global Feedback + Specific Feedback (if any)
+            current_feedback = f"Overall: {global_feedback}"
+            if role_name in role_specific_feedbacks:
+                current_feedback += f"\nSpecific Advice for {role_name}: {role_specific_feedbacks[role_name]}"
             
             jd_input = {
-                "role_name": role["role_name"],
-                "initial_jd": role["initial_jd"],
+                "role_name": role_name,
+                "initial_jd": current_jd_content, 
                 "requirements": json.dumps(requirements, ensure_ascii=False),
-                "tasks": json.dumps(tasks, ensure_ascii=False)
+                "tasks": json.dumps(tasks, ensure_ascii=False),
+                "feedback": current_feedback
             }
-            opt_jd = optimizer.invoke(jd_input)
-            optimized_jds.append(opt_jd)
-        
+            try:
+                opt_jd = optimizer.invoke(jd_input)
+                optimized_jds.append(opt_jd)
+                
+                next_round_jds[role_name] = json.dumps(opt_jd, ensure_ascii=False, indent=2)
+
+            except Exception as e:
+                print(f"    ❌ 优化角色 {role_name} 失败: {e}")
+                # Keep previous JD if failed
+                optimized_jds.append({"role_name": role_name, "error": str(e)}) # Placeholder
+                next_round_jds[role_name] = current_role_jds[role_name]
+
+        current_role_jds = next_round_jds
         final_jds = optimized_jds
         
         # 4. JD 验证
@@ -98,6 +118,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
             print(f"    >>> 验证未通过 (分数: {validation_result.get('score')})")
             print(f"    反馈: {validation_result.get('overall_feedback')}")
             
+            # 更新反馈给下一轮
+            global_feedback = validation_result.get('overall_feedback', '无具体反馈')
+            role_specific_feedbacks = validation_result.get('role_specific_feedback', {})
+            
             # 如果存在严重缺失，且有需要用户反馈的问题，则中断流程返回给用户
             if validation_result.get("user_feedback_needed"):
                 print("    !!! 需要用户补充信息 !!!")
@@ -107,6 +131,7 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
                     "validation_result": validation_result,
                     "current_jds": final_jds
                 }
+
     
     return {
         "status": "completed",

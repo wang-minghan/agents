@@ -29,7 +29,7 @@
 
 输出:
 ```json
-{
+{{
   "role_name": "Senior Frontend Engineer (WeChat Mini Program)",
   "responsibilities": [
     "负责外卖小程序核心流程的前端开发，包括首页、购物车、订单结算等模块",
@@ -58,4 +58,4 @@
     "提交PR前必须通过CI流水线检查",
     "编写清晰的技术文档和API对接文档"
   ]
-}
+}}

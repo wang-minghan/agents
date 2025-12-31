@@ -19,6 +19,7 @@
 - `missing_requirements`: 遗漏的需求点 (list[string])
 - `logic_gaps`: 逻辑或可行性上的漏洞 (list[string])
 - `user_feedback_needed`: 需要用户补充的问题列表 (list[string], 若不通过必须提供)
+- `role_specific_feedback`: 针对特定角色的改进建议 (dict[role_name, string])
 - `overall_feedback`: 整体评价 (string)
 
 # 示例
@@ -37,5 +38,9 @@
     "视频播放的具体来源是什么？（如：商家上传、实时直播还是第三方平台嵌入？）",
     "对视频播放的性能（如延迟、清晰度）有什么具体要求？"
   ],
+  "role_specific_feedback": {
+      "Frontend Engineer": "需要在JD中补充微信小程序Video组件开发经验，以及流媒体播放优化相关的技能要求。",
+      "Backend Engineer": "建议增加视频存储、转码服务即CDN对接的相关后端开发经验。"
+  },
   "overall_feedback": "JD未能覆盖视频播放这一核心功能，且目前的人员技能配置无法支撑该需求。"
 }

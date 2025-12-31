@@ -1,0 +1,24 @@
+llm:
+  model: "gpt-4"
+  temperature: 0.7
+
+workflow:
+  max_iterations: 3
+  validation_threshold: 0.8
+
+roles:
+  requirement_analyzer:
+    model: "gpt-4"
+    temperature: 0.3
+  
+  task_classifier:
+    model: "gpt-4"
+    temperature: 0.5
+    
+  jd_optimizer:
+    model: "gpt-4"
+    temperature: 0.7
+    
+  jd_validator:
+    model: "gpt-4"
+    temperature: 0.2

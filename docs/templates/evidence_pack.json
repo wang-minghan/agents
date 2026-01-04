@@ -1,0 +1,20 @@
+{
+  "generated_at": "2025-01-01T00:00:00Z",
+  "ui_evidence": {
+    "status": "passed",
+    "path": "output/evidence/ui"
+  },
+  "user_simulation": {
+    "status": "passed",
+    "summary": "SUCCESS: User simulation passed."
+  },
+  "tests": {
+    "status": "passed",
+    "summary": "SUCCESS: All tests passed."
+  },
+  "files": [
+    "ui/design_baseline.png",
+    "ui/implementation.png",
+    "manifest.json"
+  ]
+}

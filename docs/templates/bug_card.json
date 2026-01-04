@@ -1,0 +1,12 @@
+{
+  "id": "BUG-001",
+  "type": "UI",
+  "severity": "S2",
+  "scope": "页面/组件",
+  "repro_steps": ["step1", "step2"],
+  "expected": "期望结果",
+  "actual": "实际结果",
+  "evidence": ["output/evidence/ui/design_baseline.png", "output/evidence/ui/implementation.png"],
+  "owner": "UI_Engineer",
+  "status": "open"
+}

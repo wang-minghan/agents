@@ -71,7 +71,7 @@ def load_config(config_path: str = None, base_dir: Path = None) -> Dict[str, Any
 
             # 注入配置: Global override or detailed injection
             # dev_team uses config["llm"] = profile
-            # task_planner injects into roles if missing.
+            # architect injects into roles if missing.
             # We support both: put it in "llm" key, and agents can use it as they see fit.
             config["llm"] = profile
             

@@ -3,6 +3,13 @@ from typing import Any, Dict
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI
+from langchain_core.callbacks.base import BaseCallbackHandler
+
+
+class _StreamingPrintHandler(BaseCallbackHandler):
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        if token:
+            print(token, end="", flush=True)
 
 def build_classifier_chain(config: Dict[str, Any]):
     role_config = config.get("roles", {}).get("task_classifier", {})
@@ -15,7 +22,9 @@ def build_classifier_chain(config: Dict[str, Any]):
         model=model_name,
         temperature=temperature,
         api_key=api_key,
-        base_url=api_base
+        base_url=api_base,
+        streaming=True,
+        callbacks=[_StreamingPrintHandler()],
     )
     
     agent_root = Path(config.get("agent_root", "."))

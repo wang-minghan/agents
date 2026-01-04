@@ -14,6 +14,8 @@ poetry run streamlit run ui/streamlit_app.py
 
 默认地址：`http://localhost:8501`
 
-## 输出目录
+## 入口说明
 
-- 默认输出目录：`/home/minghan/project/agents/output`
+- 默认首页为聚合入口（Agents Hub），动态展示可用 Agent 页面
+- 侧边栏可直接进入具体 Agent 页面
+- Dev Team 页面提供“发布到 Excel Agent”按钮，确认后全量覆盖 `agents/excel_to_csv`

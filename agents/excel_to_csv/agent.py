@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Iterable
@@ -35,6 +36,7 @@ _CURRENT_TRACE: contextvars.ContextVar["RunTree | None"] = contextvars.ContextVa
     "langsmith_trace",
     default=None,
 )
+_LLM_CACHE = threading.local()
 
 def _iter_input_files(root: Path) -> Iterable[Path]:
     for path in root.rglob("*"):
@@ -147,6 +149,22 @@ def _build_llm(
         timeout=timeout_seconds,
         max_retries=max_retries,
     )
+
+
+def _get_llm(config: dict[str, object], model_override: str | None = None) -> "ChatOpenAI":
+    model = model_override or str(config.get("model", "deepseek-chat"))
+    api_key = str(config.get("api_key") or "")
+    api_base = str(config.get("api_base", "https://api.deepseek.com"))
+    timeout_seconds = _safe_int(config.get("timeout_seconds", 120), 120)
+    max_retries = _safe_int(config.get("max_retries", 2), 2)
+    key = (model, api_key, api_base, timeout_seconds, max_retries)
+    cache = getattr(_LLM_CACHE, "clients", None)
+    if cache is None:
+        cache = {}
+        _LLM_CACHE.clients = cache
+    if key not in cache:
+        cache[key] = _build_llm(config, model_override=model)
+    return cache[key]
 
 
 def _extract_version(file_stem: str) -> str:
@@ -1034,7 +1052,7 @@ def _process_sheet(
                 keep_default_na=False,
             )
         model = _select_model(df, sheet_label, llm_config)
-        llm = _build_llm(llm_config, model_override=model)
+        llm = _get_llm(llm_config, model_override=model)
         allow_auto_header = (not is_csv) and _should_auto_header(df)
         version = _extract_version(source_path.stem)
         inferred_topic, inferred_table = _infer_topic_table_from_name(
@@ -1156,7 +1174,9 @@ def convert_excel_dir(
             continue
 
         excel = pd.ExcelFile(source_path)
-        max_workers = _safe_int(llm_config.get("max_workers", 2), 2)
+        max_workers = _safe_int(
+            llm_config.get("max_workers", min(4, (os.cpu_count() or 2))), 2
+        )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for sheet_name in excel.sheet_names:

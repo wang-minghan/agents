@@ -2,14 +2,14 @@ import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-from agents.task_planner.agent import run_task_planner
+from agents.dev_team.architect.agent import run_architect
 
 class TestTaskPlanner(unittest.TestCase):
     
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_successful_flow(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         # Mock Config
         config = {
@@ -45,16 +45,16 @@ class TestTaskPlanner(unittest.TestCase):
         }
         
         input_data = {"user_input": "Do something"}
-        result = run_task_planner(input_data, config)
+        result = run_architect(input_data, config)
         
         self.assertEqual(result["status"], "completed")
         self.assertEqual(len(result["tasks"]), 1)
         self.assertEqual(len(result["final_jds"]), 1)
 
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_needs_feedback(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         
@@ -71,27 +71,27 @@ class TestTaskPlanner(unittest.TestCase):
             "overall_feedback": "Bad"
         }
         
-        result = run_task_planner({"user_input": "in"}, config)
+        result = run_architect({"user_input": "in"}, config)
         
         self.assertEqual(result["status"], "needs_feedback")
         self.assertIn("Question 1?", result["validation_result"]["user_feedback_needed"])
 
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
     def test_invalid_classification(self, mock_classifier, mock_analyzer):
         config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
         mock_classifier.return_value.invoke.return_value = {"tasks": "bad", "roles": []}
 
-        result = run_task_planner({"user_input": "in"}, config)
+        result = run_architect({"user_input": "in"}, config)
 
         self.assertEqual(result["status"], "error")
         self.assertIn("Task classification failed", result["error"])
 
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_stringified_analyzer_output(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         mock_analyzer.return_value.invoke.return_value = '{"goal": "Test Goal"}'
@@ -108,12 +108,12 @@ class TestTaskPlanner(unittest.TestCase):
             "score": 0.9,
         }
 
-        result = run_task_planner({"user_input": "in"}, config)
+        result = run_architect({"user_input": "in"}, config)
 
         self.assertEqual(result["status"], "completed")
 
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_resume_from_feedback(self, mock_validator, mock_optimizer):
         config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
 
@@ -128,17 +128,17 @@ class TestTaskPlanner(unittest.TestCase):
             "iteration": 1,
         }
 
-        result = run_task_planner(
+        result = run_architect(
             {"user_input": "in", "planner_state": planner_state, "user_feedback": "补充信息"},
             config,
         )
 
         self.assertEqual(result["status"], "completed")
 
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_snapshot_written(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {
@@ -148,7 +148,7 @@ class TestTaskPlanner(unittest.TestCase):
                     "snapshot_dir": tmpdir,
                 },
                 "roles": {},
-                "agent_root": "/home/minghan/project/agents/agents/task_planner",
+                "agent_root": "/home/minghan/project/agents/agents/dev_team/architect",
             }
 
             mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
@@ -159,16 +159,16 @@ class TestTaskPlanner(unittest.TestCase):
             mock_optimizer.return_value.invoke.return_value = {"role_name": "Dev"}
             mock_validator.return_value.invoke.return_value = {"passed": True, "score": 0.9}
 
-            result = run_task_planner({"user_input": "in"}, config)
+            result = run_architect({"user_input": "in"}, config)
 
             snapshot_path = result.get("snapshot_path")
             self.assertIsNotNone(snapshot_path)
             self.assertTrue(Path(snapshot_path).exists())
 
-    @patch('agents.task_planner.agent.build_analyzer_chain')
-    @patch('agents.task_planner.agent.build_classifier_chain')
-    @patch('agents.task_planner.agent.build_optimizer_chain')
-    @patch('agents.task_planner.agent.build_validator_chain')
+    @patch('agents.dev_team.architect.agent.build_analyzer_chain')
+    @patch('agents.dev_team.architect.agent.build_classifier_chain')
+    @patch('agents.dev_team.architect.agent.build_optimizer_chain')
+    @patch('agents.dev_team.architect.agent.build_validator_chain')
     def test_constraints_injected(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}, "roles": {}}
 
@@ -180,7 +180,7 @@ class TestTaskPlanner(unittest.TestCase):
         mock_optimizer.return_value.invoke.return_value = {"role_name": "Dev"}
         mock_validator.return_value.invoke.return_value = {"passed": True, "score": 0.9}
 
-        run_task_planner({"user_input": "in", "constraints": {"stack": "python"}}, config)
+        run_architect({"user_input": "in", "constraints": {"stack": "python"}}, config)
 
         call_args = mock_analyzer.return_value.invoke.call_args[0][0]
         self.assertIn("[Constraints]", call_args["user_input"])

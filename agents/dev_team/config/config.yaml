@@ -1,12 +1,8 @@
 roles:
   engineer:
-    prompt_path: "agents/dev_team/prompts/engineer.txt"
+    prompt_path: "prompts/engineer.txt"
   qa:
-    prompt_path: "agents/dev_team/prompts/qa.txt"
+    prompt_path: "prompts/qa.txt"
 
 report:
   enabled: true
-
-collaboration:
-  force_qa_on_success: false
-  post_success_qa_rounds: 0

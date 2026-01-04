@@ -3,15 +3,20 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import shutil
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-from agents.dev_team.orchestrator import Orchestrator
+from agents.dev_team.commander import Commander
 from agents.dev_team.utils import load_config as load_dev_config
-from agents.task_planner.agent import build_agent as build_planner
+from agents.dev_team.architect.agent import (
+    build_agent as build_planner,
+    load_config as load_architect_config,
+    suggest_default_assumptions,
+)
 
 
 class _QueueWriter:
@@ -37,7 +42,7 @@ def _stream_queue(q: queue.Queue[str | None]):
 def render_dev_team(base_dir: Path) -> None:
     if st.session_state.pop("dev_team_rerun", False):
         pass
-    st.markdown('<div class="section-title">Dev Team</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Dev Team 工作流</div>', unsafe_allow_html=True)
     st.markdown(
         """
         <style>
@@ -145,40 +150,55 @@ def render_dev_team(base_dir: Path) -> None:
 
     st.markdown('<a id="dev-form"></a>', unsafe_allow_html=True)
     st.markdown(
-        "<div class='flow-card'><div class='flow-kicker'>协作路径</div>"
-        "<div class='flow-text'>输入需求 → 规划角色 → 团队协作 → QA 校验 → 报告归档</div></div>",
+        "<div class='flow-card'><div class='flow-kicker'>通用流程</div>"
+        "<div class='flow-text'>输入需求 → 架构规划 → 团队协作 → 质量门禁 → 交付归档</div></div>",
         unsafe_allow_html=True,
     )
 
-    col_main, col_side = st.columns([1.8, 1])
-    with col_main:
-        user_input = st.text_area(
-            "需求描述",
-            height=240,
-            placeholder="例如：构建一个支持团队协作的任务看板，需含权限、审计日志与导出。",
-        )
-    with col_side:
-        tab_flow, tab_exec, tab_output = st.tabs(["协作流程", "执行策略", "输出"])
-        with tab_flow:
-            max_rounds = st.slider("最大协作轮次", min_value=1, max_value=6, value=3)
-            force_qa_on_success = st.checkbox("测试通过后仍执行 QA 审查", value=False)
-            post_success_qa_rounds = st.slider("测试通过后的 QA 轮次", min_value=0, max_value=2, value=0)
-        with tab_exec:
-            allow_unsafe_execution = st.checkbox("允许本地执行测试（危险）", value=False)
-        with tab_output:
-            output_dir = st.text_input(
-                "输出目录",
-                value=str(base_dir / "agents" / "dev_team" / "output" / "codebase"),
-            )
+    user_input = st.text_area(
+        "需求描述（0→1 或 1→100）",
+        height=240,
+        placeholder="例如：迭代优化已交付的 Excel 转换项目，提升性能与界面体验。",
+    )
+    iteration_target = st.text_input(
+        "迭代目标目录（可选）",
+        placeholder="留空表示从0开始；填写现有项目目录用于1到100迭代",
+        value="",
+    )
+    st.markdown("<div class='panel-label'>设计证据</div>", unsafe_allow_html=True)
+    baseline_upload = st.file_uploader("上传设计基线图（design_baseline）", type=["png", "jpg", "jpeg"])
+    impl_upload = st.file_uploader("上传实现截图（implementation）", type=["png", "jpg", "jpeg"])
+    max_rounds = 3
+    output_dir = str(base_dir / "agents" / "dev_team" / "output" / "codebase")
 
-    run_col, hint_col = st.columns([1.1, 1.9])
+    run_col, hint_col, publish_col = st.columns([1.1, 1.4, 1.2])
     with run_col:
         run_clicked = st.button("运行 Dev Team", use_container_width=True)
     with hint_col:
         st.markdown(
-            "<div class='run-hint'>运行将调用 Planner 与协作流程，请确保 LLM 配置有效。</div>",
+            "<div class='run-hint'>通用工作流自动识别 0→1 与 1→100，确保 LLM 配置有效。</div>",
             unsafe_allow_html=True,
         )
+    with publish_col:
+        publish_confirm = st.checkbox("确认全量覆盖发布目录", value=False)
+        publish_clicked = st.button("发布到 Excel Agent", use_container_width=True)
+
+    if publish_clicked:
+        source_dir = base_dir / "agents" / "dev_team" / "output" / "codebase"
+        target_dir = base_dir / "agents" / "excel_to_csv"
+        if not publish_confirm:
+            st.error("请先确认全量覆盖发布目录。")
+            return
+        if not source_dir.exists():
+            st.error(f"找不到源目录: {source_dir}")
+            return
+        try:
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            shutil.copytree(source_dir, target_dir)
+            st.success(f"发布完成: {target_dir}")
+        except Exception as exc:
+            st.error(f"发布失败: {exc}")
 
     if run_clicked:
         if not user_input.strip():
@@ -187,11 +207,22 @@ def render_dev_team(base_dir: Path) -> None:
 
         config = load_dev_config()
         config["output_dir"] = output_dir
-        config["allow_unsafe_execution"] = bool(allow_unsafe_execution)
-        config["collaboration"] = {
-            "force_qa_on_success": bool(force_qa_on_success),
-            "post_success_qa_rounds": int(post_success_qa_rounds),
-        }
+        constraints: dict[str, str] = {}
+        if iteration_target.strip():
+            config["iteration_target"] = iteration_target.strip()
+            constraints["existing_project"] = iteration_target.strip()
+        evidence_dir = Path(output_dir) / "evidence" / "ui"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        if baseline_upload is not None:
+            suffix = Path(baseline_upload.name).suffix or ".png"
+            baseline_path = evidence_dir / f"design_baseline{suffix}"
+            baseline_path.write_bytes(baseline_upload.getvalue())
+            constraints["design_baseline"] = str(baseline_path)
+        if impl_upload is not None:
+            suffix = Path(impl_upload.name).suffix or ".png"
+            impl_path = evidence_dir / f"implementation{suffix}"
+            impl_path.write_bytes(impl_upload.getvalue())
+            constraints["implementation_snapshot"] = str(impl_path)
 
         planner = build_planner()
         status_box = st.status("步骤 1/3：规划角色", expanded=True)
@@ -203,12 +234,32 @@ def render_dev_team(base_dir: Path) -> None:
             buffer = _QueueWriter(q)
             result: dict
             with redirect_stdout(buffer):
-                planner_result = planner.invoke({"user_input": user_input})
+                input_payload = {"user_input": user_input}
+                if constraints:
+                    input_payload["constraints"] = constraints
+                planner_result = planner.invoke(input_payload)
+                if planner_result.get("status") == "needs_feedback":
+                    print("⚠️ 未提供补充信息，使用AI默认假设继续规划。")
+                    architect_config = load_architect_config()
+                    ai_feedback = suggest_default_assumptions(
+                        architect_config,
+                        planner_result,
+                        user_input,
+                        constraints,
+                    )
+                    retry_payload = {
+                        "user_input": user_input,
+                        "planner_state": planner_result.get("planner_state", {}),
+                        "user_feedback": ai_feedback,
+                    }
+                    if constraints:
+                        retry_payload["constraints"] = constraints
+                    planner_result = planner.invoke(retry_payload)
                 planner_status = planner_result.get("status")
                 if planner_status == "completed":
-                    orchestrator = Orchestrator(config, output_dir=output_dir)
-                    orchestrator.initialize_team(planner_result)
-                    result = orchestrator.run_collaboration(max_rounds=max_rounds)
+                    commander = Commander(config, output_dir=output_dir)
+                    commander.initialize_team(planner_result)
+                    result = commander.run_collaboration(max_rounds=max_rounds)
                 elif planner_status == "needs_feedback":
                     result = {
                         "status": "needs_feedback",

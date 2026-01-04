@@ -1,16 +1,72 @@
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Callable
 from pathlib import Path
 from datetime import datetime, timezone
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_core.runnables import RunnableLambda
+from langchain_openai import ChatOpenAI
 
-from agents.task_planner.chains.analyzer_chain import build_analyzer_chain
-from agents.task_planner.chains.classifier_chain import build_classifier_chain
-from agents.task_planner.chains.optimizer_chain import build_optimizer_chain
-from agents.task_planner.chains.validator_chain import build_validator_chain
+from agents.dev_team.architect.chains.analyzer_chain import build_analyzer_chain
+from agents.dev_team.architect.chains.classifier_chain import build_classifier_chain
+from agents.dev_team.architect.chains.optimizer_chain import build_optimizer_chain
+from agents.dev_team.architect.chains.validator_chain import build_validator_chain
 
 
 from agents.common import load_config as common_load_config
+
+
+def suggest_default_assumptions(
+    config: Dict[str, Any],
+    planner_result: Dict[str, Any],
+    user_input: str,
+    constraints: Optional[Dict[str, Any]] = None,
+) -> str:
+    llm_cfg = config.get("llm", {})
+    role_cfg = config.get("roles", {}).get("requirement_analyzer", {})
+    model = role_cfg.get("model") or llm_cfg.get("model", "gpt-4")
+    api_key = role_cfg.get("api_key") or llm_cfg.get("api_key")
+    api_base = role_cfg.get("api_base") or llm_cfg.get("api_base")
+    if not api_key:
+        return "默认假设:\n- 无法获取LLM配置，请补充关键假设。"
+
+    llm = ChatOpenAI(
+        model=model,
+        temperature=0.2,
+        api_key=api_key,
+        base_url=api_base,
+        max_retries=1,
+        timeout=60,
+    )
+    questions = planner_result.get("validation_result", {}).get("user_feedback_needed", [])
+    prompt = (
+        "你是资深架构师。给出最小可行的默认假设，用于在缺少用户补充时继续推进规划。\n"
+        "要求：覆盖性能目标、UI范围、目标用户、角色补齐/交付边界，使用中文条目列表。\n"
+        "只输出条目列表，不要额外解释。\n\n"
+        f"用户需求: {user_input}\n"
+        f"待澄清问题: {questions}\n"
+        f"约束: {constraints or {}}\n"
+    )
+    response = llm.invoke(prompt)
+    content = response.content if hasattr(response, "content") else response
+    content = str(content).strip()
+    return "默认假设:\n" + content
+
+def _invoke_with_heartbeat(label: str, func: Callable[[], Any], interval: int = 10) -> Any:
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(interval):
+            print(f">>> {label} 仍在分析...", flush=True)
+
+    worker = threading.Thread(target=_beat, daemon=True)
+    worker.start()
+    try:
+        return func()
+    finally:
+        stop.set()
+        worker.join(timeout=1)
 
 
 def _coerce_json(payload: Any) -> Any:
@@ -113,7 +169,7 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
         
     return config
 
-def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     user_input = input_data.get("user_input") or ""
     execution_feedback = input_data.get("execution_feedback")
     planner_state = input_data.get("planner_state")
@@ -153,7 +209,14 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         print(">>> 正在进行需求分析...")
         analyzer = build_analyzer_chain(config)
         try:
-            requirements = _validate_requirements(analyzer.invoke({"user_input": user_input}))
+            print(">>> 需求分析输出(流式):", flush=True)
+            requirements = _validate_requirements(
+                _invoke_with_heartbeat(
+                    "需求分析",
+                    lambda: analyzer.invoke({"user_input": user_input, "constraints": constraints}),
+                )
+            )
+            print("\n", flush=True)
         except Exception as e:
             return _finalize_result({
                 "status": "error",
@@ -165,7 +228,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         print(">>> 正在进行任务拆解与角色分配...")
         classifier = build_classifier_chain(config)
         try:
-            classification = classifier.invoke({"requirements": json.dumps(requirements, ensure_ascii=False)})
+            classification = _invoke_with_heartbeat(
+                "任务拆解",
+                lambda: classifier.invoke({"requirements": json.dumps(requirements, ensure_ascii=False)}),
+            )
             tasks, roles = _validate_classification(classification)
         except Exception as e:
             return _finalize_result({
@@ -201,34 +267,56 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         # Use a dictionary to store optimized JDs for the next iteration
         next_round_jds = {}
 
+        def _optimize_role(role_name: str, jd_input: Dict[str, Any]):
+            try:
+                opt_jd = _validate_optimizer_output(
+                    role_name,
+                    _invoke_with_heartbeat(
+                        f"JD优化({role_name})",
+                        lambda: optimizer.invoke(jd_input),
+                    ),
+                )
+                return role_name, opt_jd, None
+            except Exception as exc:
+                return role_name, None, exc
+
+        max_workers = min(4, max(1, len(roles)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for role in roles:
+                role_name = role["role_name"]
+                current_jd_content = current_role_jds.get(role_name, "")
+                current_feedback = f"Overall: {global_feedback}"
+                if role_name in role_specific_feedbacks:
+                    current_feedback += f"\nSpecific Advice for {role_name}: {role_specific_feedbacks[role_name]}"
+                jd_input = {
+                    "role_name": role_name,
+                    "initial_jd": current_jd_content,
+                    "requirements": json.dumps(requirements, ensure_ascii=False),
+                    "tasks": json.dumps(tasks, ensure_ascii=False),
+                    "feedback": current_feedback,
+                }
+                futures[executor.submit(_optimize_role, role_name, jd_input)] = role_name
+
+            results: Dict[str, Dict[str, Any]] = {}
+            errors: Dict[str, Exception] = {}
+            for future in as_completed(futures):
+                role_name, opt_jd, err = future.result()
+                if err:
+                    errors[role_name] = err
+                elif opt_jd:
+                    results[role_name] = opt_jd
+
         for role in roles:
             role_name = role["role_name"]
-            # INPUT for optimizer: Use the JD from the CURRENT state (updated in previous loop), not the initial one
-            current_jd_content = current_role_jds.get(role_name, "")
-            
-            # Construct personalized feedback
-            # Feedback = Global Feedback + Specific Feedback (if any)
-            current_feedback = f"Overall: {global_feedback}"
-            if role_name in role_specific_feedbacks:
-                current_feedback += f"\nSpecific Advice for {role_name}: {role_specific_feedbacks[role_name]}"
-            
-            jd_input = {
-                "role_name": role_name,
-                "initial_jd": current_jd_content, 
-                "requirements": json.dumps(requirements, ensure_ascii=False),
-                "tasks": json.dumps(tasks, ensure_ascii=False),
-                "feedback": current_feedback
-            }
-            try:
-                opt_jd = _validate_optimizer_output(role_name, optimizer.invoke(jd_input))
+            if role_name in results:
+                opt_jd = results[role_name]
                 optimized_jds.append(opt_jd)
-                
                 next_round_jds[role_name] = json.dumps(opt_jd, ensure_ascii=False, indent=2)
-
-            except Exception as e:
-                print(f"    ❌ 优化角色 {role_name} 失败: {e}")
-                # Keep previous JD if failed
-                optimized_jds.append({"role_name": role_name, "error": str(e)}) # Placeholder
+            else:
+                err = errors.get(role_name)
+                print(f"    ❌ 优化角色 {role_name} 失败: {err}")
+                optimized_jds.append({"role_name": role_name, "error": str(err)})
                 next_round_jds[role_name] = current_role_jds[role_name]
 
         current_role_jds = next_round_jds
@@ -243,7 +331,12 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
             "tasks": json.dumps(tasks, ensure_ascii=False)
         }
         try:
-            validation_result = _validate_validator_output(validator.invoke(validation_input))
+            validation_result = _validate_validator_output(
+                _invoke_with_heartbeat(
+                    "JD验证",
+                    lambda: validator.invoke(validation_input),
+                )
+            )
         except Exception as e:
             return _finalize_result({
                 "status": "error",
@@ -303,7 +396,7 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
 
 def build_agent():
     config = load_config()
-    return RunnableLambda(lambda x: run_task_planner(x, config))
+    return RunnableLambda(lambda x: run_architect(x, config))
 
 if __name__ == "__main__":
     import sys

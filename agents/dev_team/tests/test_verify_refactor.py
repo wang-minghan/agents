@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from agents.dev_team.orchestrator import Orchestrator
-from agents.dev_team.execution import SafeExecutor, LocalUnsafeExecutor
+from agents.dev_team.commander import Commander
+from agents.dev_team.execution import LocalUnsafeExecutor
 from agents.dev_team.interfaces import Agent, CodeExecutor
 from agents.common import save_files_from_content
 from agents.dev_team.utils import find_project_root
@@ -26,19 +26,12 @@ def test_architecture_and_safety(tmp_path: Path):
         },
     }
 
-    # 1. Default Safety (SafeExecutor)
-    orch = Orchestrator(config, output_dir=str(test_output_dir))
-    assert isinstance(orch.code_executor, SafeExecutor)
-    result = orch.code_executor.run_tests(str(test_output_dir))
-    assert "SKIPPED" in result
+    # 1. Default Execution (LocalUnsafeExecutor)
+    orch = Commander(config, output_dir=str(test_output_dir))
+    assert isinstance(orch.code_executor, LocalUnsafeExecutor)
 
-    # 2. Explicit Unsafe Config
-    unsafe_config = config.copy()
-    unsafe_config["allow_unsafe_execution"] = True
-    orch_unsafe = Orchestrator(unsafe_config, output_dir=str(test_output_dir))
-    assert isinstance(orch_unsafe.code_executor, LocalUnsafeExecutor)
+    # 2. Dependency Injection (AgentFactory)
 
-    # 3. Dependency Injection (AgentFactory)
     class MockAgent:
         def __init__(self, jd, cfg, mem, out):
             self.role_name = jd.get("role_name")
@@ -54,7 +47,7 @@ def test_architecture_and_safety(tmp_path: Path):
     def mock_factory(jd, cfg, mem, out) -> Agent:
         return MockAgent(jd, cfg, mem, out)
 
-    orch_di = Orchestrator(config, output_dir=str(test_output_dir), agent_factory=mock_factory)
+    orch_di = Commander(config, output_dir=str(test_output_dir), agent_factory=mock_factory)
     planner_result = {
         "final_jds": [{"role_name": "MockEngineer", "role_type": "ENGINEER"}],
         "requirements": {},
@@ -63,7 +56,7 @@ def test_architecture_and_safety(tmp_path: Path):
     assert len(orch_di.agents) == 1
     assert isinstance(orch_di.agents[0], MockAgent)
 
-    # 4. Path Safety in save_files_from_content (Regression Test)
+    # 3. Path Safety in save_files_from_content (Regression Test)
     safe_files = save_files_from_content('<file path="safe.py">content</file>', test_output_dir)
     assert len(safe_files) == 1
     assert (test_output_dir / "safe.py").exists()
@@ -72,7 +65,7 @@ def test_architecture_and_safety(tmp_path: Path):
     assert unsafe_files == []
     assert not (test_output_dir / "../unsafe.py").exists()
 
-    # 5. Robust Path Finding
+    # 4. Robust Path Finding
     fake_root = test_output_dir / "fake_project"
     (fake_root / "configs").mkdir(parents=True, exist_ok=True)
     (fake_root / "configs" / "llm.yaml").touch()
@@ -83,7 +76,7 @@ def test_architecture_and_safety(tmp_path: Path):
     found = find_project_root(deep_path)
     assert found.resolve() == fake_root.resolve()
 
-    # 6. Orchestrator Early Exit
+    # 5. Commander Early Exit
     class MockPassExecutor(CodeExecutor):
         def run_tests(self, test_dir: str) -> str:
             return "SUCCESS: All tests passed."
@@ -94,8 +87,20 @@ def test_architecture_and_safety(tmp_path: Path):
             self._memory.add_output(self.role_name, content)
             return content
 
-    orch_early = Orchestrator(config, output_dir=str(test_output_dir), code_executor=MockPassExecutor())
+    orch_early = Commander(config, output_dir=str(test_output_dir), code_executor=MockPassExecutor())
     orch_early.agents = [MockMemoryAgent({"role_name": "Dev"}, config, orch_early.shared_memory, test_output_dir)]
     result = orch_early.run_collaboration(max_rounds=5)
     assert any(path.endswith("a.txt") for path in orch_early.shared_memory.saved_files)
     assert result["status"] == "passed"
+
+
+def test_local_executor_skips_without_tests(tmp_path: Path):
+    executor = LocalUnsafeExecutor()
+    result = executor.run_tests(str(tmp_path))
+    assert "SKIPPED: No tests found." in result
+
+
+def test_user_simulation_skips_when_missing(tmp_path: Path):
+    executor = LocalUnsafeExecutor()
+    result = executor.run_user_simulation(str(tmp_path))
+    assert "SKIPPED: No user simulation script found." in result

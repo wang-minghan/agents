@@ -9,8 +9,8 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-from agents.task_planner.agent import load_config as load_planner_config
-from agents.task_planner.agent import run_task_planner
+from agents.dev_team.architect.agent import load_config as load_planner_config
+from agents.dev_team.architect.agent import run_architect
 
 
 def _parse_json(text: str, label: str) -> tuple[object | None, str | None]:
@@ -42,10 +42,10 @@ def _stream_queue(q: queue.Queue[str | None]):
         yield item
 
 
-def render_task_planner(base_dir: Path) -> None:
-    if st.session_state.pop("task_planner_rerun", False):
+def render_architect(base_dir: Path) -> None:
+    if st.session_state.pop("architect_rerun", False):
         pass
-    st.markdown('<div class="section-title">Task Planner</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">架构师</div>', unsafe_allow_html=True)
     st.markdown(
         """
         <style>
@@ -164,38 +164,38 @@ def render_task_planner(base_dir: Path) -> None:
             "需求描述",
             height=240,
             placeholder="例如：我想做一个支持高并发的秒杀系统，需要考虑缓存击穿、雪崩以及分布式锁。",
-            key="task_planner_user_input",
+            key="architect_user_input",
         )
         constraints_text = st.text_area(
             "约束（JSON）",
             height=150,
             placeholder='例如：{"tech_stack":["python","fastapi"],"must_have":["redis","mysql"]}',
-            key="task_planner_constraints",
+            key="architect_constraints",
         )
 
     with col_side:
         tab_basic, tab_snapshot, tab_resume = st.tabs(["迭代", "快照", "续跑"])
         with tab_basic:
             max_iterations = st.slider(
-                "最大迭代轮次", min_value=1, max_value=6, value=3, key="task_planner_iters"
+                "最大迭代轮次", min_value=1, max_value=6, value=3, key="architect_iters"
             )
             validation_threshold = st.slider(
                 "验证阈值",
                 min_value=0.1,
                 max_value=1.0,
                 value=0.8,
-                key="task_planner_threshold",
+                key="architect_threshold",
             )
         with tab_snapshot:
-            snapshot_enabled = st.checkbox("保存规划快照", value=True, key="task_planner_snapshot")
+            snapshot_enabled = st.checkbox("保存规划快照", value=True, key="architect_snapshot")
             snapshot_dir = st.text_input(
                 "快照目录",
-                value=str(base_dir / "agents" / "task_planner" / "output" / "snapshots"),
-                key="task_planner_snapshot_dir",
+                value=str(base_dir / "agents" / "dev_team" / "architect" / "output" / "snapshots"),
+                key="architect_snapshot_dir",
             )
         with tab_resume:
-            user_feedback = st.text_area("用户补充反馈（可选）", height=120, key="task_planner_feedback")
-            planner_state_text = st.text_area("planner_state（JSON，可选）", height=160, key="task_planner_state")
+            user_feedback = st.text_area("用户补充反馈（可选）", height=120, key="architect_feedback")
+            planner_state_text = st.text_area("planner_state（JSON，可选）", height=160, key="architect_state")
 
     run_col, hint_col = st.columns([1.1, 1.9])
     with run_col:
@@ -245,8 +245,8 @@ def render_task_planner(base_dir: Path) -> None:
         def _runner() -> None:
             buffer = _QueueWriter(q)
             with redirect_stdout(buffer):
-                result = run_task_planner(input_data, config)
-            st.session_state["task_planner_result"] = result
+                result = run_architect(input_data, config)
+            st.session_state["architect_result"] = result
             q.put(None)
 
         thread = threading.Thread(target=_runner, daemon=True)
@@ -257,11 +257,11 @@ def render_task_planner(base_dir: Path) -> None:
         progress.progress(0.7)
         status_box.update(label="步骤 3/3：完成", state="complete")
         progress.progress(1.0)
-        st.session_state["task_planner_rerun"] = True
-        st.session_state["task_planner_scroll"] = True
+        st.session_state["architect_rerun"] = True
+        st.session_state["architect_scroll"] = True
         st.rerun()
 
-    result = st.session_state.get("task_planner_result")
+    result = st.session_state.get("architect_result")
     if not result:
         st.markdown('<div class="status-chip">尚未运行</div>', unsafe_allow_html=True)
         return
@@ -272,10 +272,10 @@ def render_task_planner(base_dir: Path) -> None:
         st.success("规划完成")
     elif status == "needs_feedback":
         st.warning("需要补充信息")
-        st.session_state["task_planner_scroll_status"] = True
+        st.session_state["architect_scroll_status"] = True
     else:
         st.error(f"执行失败: {result.get('error')}")
-        st.session_state["task_planner_scroll_status"] = True
+        st.session_state["architect_scroll_status"] = True
 
     if status == "needs_feedback":
         planner_state_payload = result.get("planner_state")
@@ -286,9 +286,9 @@ def render_task_planner(base_dir: Path) -> None:
                 unsafe_allow_html=True,
             )
             if st.button("回到输入区"):
-                st.session_state["task_planner_scroll_form"] = True
+                st.session_state["architect_scroll_form"] = True
             if st.button("将 planner_state 填回表单"):
-                st.session_state["task_planner_state"] = json.dumps(
+                st.session_state["architect_state"] = json.dumps(
                     planner_state_payload, ensure_ascii=False, indent=2
                 )
                 st.info("已填回 planner_state，请补充反馈后再运行。")
@@ -299,7 +299,7 @@ def render_task_planner(base_dir: Path) -> None:
             unsafe_allow_html=True,
         )
         if st.button("回到输入区"):
-            st.session_state["task_planner_scroll_form"] = True
+            st.session_state["architect_scroll_form"] = True
         with st.expander("错误详情", expanded=False):
             st.code(str(result.get("error") or "Unknown error"), language="text")
 
@@ -326,7 +326,7 @@ def render_task_planner(base_dir: Path) -> None:
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if st.session_state.pop("task_planner_scroll", False):
+    if st.session_state.pop("architect_scroll", False):
         components.html(
             """
             <script>
@@ -352,11 +352,11 @@ def render_task_planner(base_dir: Path) -> None:
     st.download_button(
         "下载结果 JSON",
         data=download_payload,
-        file_name="task_planner_result.json",
+        file_name="architect_result.json",
         mime="application/json",
     )
 
-    if st.session_state.pop("task_planner_scroll_status", False):
+    if st.session_state.pop("architect_scroll_status", False):
         components.html(
             """
             <script>
@@ -369,7 +369,7 @@ def render_task_planner(base_dir: Path) -> None:
             height=0,
         )
 
-    if st.session_state.pop("task_planner_scroll_form", False):
+    if st.session_state.pop("architect_scroll_form", False):
         components.html(
             """
             <script>

@@ -110,7 +110,7 @@ class RoleAgent:
             print(f"\n❌ {error_msg}")
             full_response = error_msg
 
-        # 尝试提取并保存文件 -> Moved to Orchestrator
+        # 尝试提取并保存文件 -> moved to coordinator
         # self.extract_and_save_files(full_response)
 
         # 将输出存入共享记忆

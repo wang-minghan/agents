@@ -61,6 +61,11 @@ def test_architecture_and_safety(tmp_path: Path):
     assert len(safe_files) == 1
     assert (test_output_dir / "safe.py").exists()
 
+    abs_path = test_output_dir / "abs.txt"
+    abs_files = save_files_from_content(f'<file path="{abs_path}">content</file>', test_output_dir)
+    assert len(abs_files) == 1
+    assert abs_path.exists()
+
     unsafe_files = save_files_from_content('<file path="../unsafe.py">content</file>', test_output_dir)
     assert unsafe_files == []
     assert not (test_output_dir / "../unsafe.py").exists()

@@ -20,9 +20,10 @@ class RoleAgent:
         llm_cfg = config.get("llm", {})
         
         # 兼容旧逻辑：如果 role_type 是 ENGINEER 但名字里有 QA/Test，也当作 QA
-        is_qa = self.role_type == "QA" or "QA" in self.role_name or "Test" in self.role_name
+        role_upper = self.role_name.upper()
+        self.is_qa = self.role_type == "QA" or "QA" in role_upper or "TEST" in role_upper
         
-        temp = 0.3 if is_qa else 0.7
+        temp = 0.3 if self.is_qa else 0.7
 
         self.llm = ChatOpenAI(
             model=llm_cfg.get("model", "gpt-4o"),
@@ -33,7 +34,7 @@ class RoleAgent:
         
         # 加载 System Prompt 模板
         # 优先使用 role_type 对应的 prompt
-        if is_qa:
+        if self.is_qa:
             prompt_path_str = self.config["roles"]["qa"]["prompt_path"]
         else:
             prompt_path_str = self.config["roles"]["engineer"]["prompt_path"]
@@ -48,28 +49,32 @@ class RoleAgent:
 
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.system_prompt_template = f.read()
+        self.prompt_template = ChatPromptTemplate.from_template(self.system_prompt_template)
 
     # extract_and_save_files method removed (Decoupled IO)
 
     def run(self) -> str:
         # 从共享记忆获取上下文
-        context = self.memory.get_context_for_role(self.role_name)
+        context = self.memory.get_context_for_role(self.role_name, self.role_type)
 
         # 渲染 Prompt
-        template = ChatPromptTemplate.from_template(self.system_prompt_template)
         # 根据不同角色的 Prompt 需要的变量进行填充
         # Engineer prompt 需要: role_jd, requirements
         # QA prompt 需要: role_jd, engineer_output
         # QA prompt 需要: role_jd, engineer_output
         
+        engineer_output = {}
+        if self.is_qa:
+            engineer_output = self.memory.get_peer_output_summaries(self.role_name, include_qa=False)
+
         prompt_kwargs = {
             "role_jd": json.dumps(self.role_jd, ensure_ascii=False, indent=2),
             "requirements": self.memory.global_context.get("requirements", ""),
-            "engineer_output": json.dumps(self.memory.get_all_outputs(), ensure_ascii=False),
+            "engineer_output": json.dumps(engineer_output, ensure_ascii=False),
             "test_results": self.memory.global_context.get("latest_test_results", "暂无测试运行结果")
         }
         
-        system_instruction = template.format(**prompt_kwargs)
+        system_instruction = self.prompt_template.format(**prompt_kwargs)
 
         user_content = (
             f"【当前任务】\n你现在的角色是: {self.role_name}\n"

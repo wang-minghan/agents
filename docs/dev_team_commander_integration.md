@@ -8,10 +8,12 @@
   - 复杂任务 → 默认最优（共识 + 交叉核查）
   - 简单任务 → 局部最优（跳过共识与交叉核查）
 - summary-only 输出，避免上下文膨胀
+- 角色视图过滤上下文：QA 只接收工程输出摘要，工程角色仅接收 QA 反馈摘要，避免重复注入
 - 测试自动执行，按单测文件逐个运行
 - 测试通过后执行用户模拟脚本（如存在），失败阻断交付
 - 测试通过后进入交付审批门禁（内置，无需配置）
 - 前端任务要求提供 UI 设计基线与实现截图，否则阻断交付
+- 交叉核查的相似度比较对输出进行长度截断，降低性能开销
 - 自动生成证据清单 `output/evidence/manifest.json` 并归档为 `output/evidence/evidence_pack_*.zip`
 - UI 截图对齐元数据生成 `output/evidence/ui/comparison.json`
 - UI 像素级差异图生成 `output/evidence/ui/diff.png`（超阈值阻断交付）

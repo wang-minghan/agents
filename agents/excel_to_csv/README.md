@@ -20,6 +20,11 @@
 python agents/excel_to_csv/agent.py --input <input_dir> --output <output_dir>
 ```
 
+高级参数：
+- `--max-rounds`：每个工作表的 AI 审核最大轮次（默认 5）。
+- `--max-workers`：覆盖单文件工作表并发线程数。
+- `--skip-llm`：跳过 AI 审核（快速模式，适用于结构稳定表格）。
+
 ## Poetry 使用
 
 ```bash

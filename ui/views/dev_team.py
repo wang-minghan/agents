@@ -207,6 +207,7 @@ def render_dev_team(base_dir: Path) -> None:
 
         config = load_dev_config()
         config["output_dir"] = output_dir
+        config["session_key"] = user_input
         constraints: dict[str, str] = {}
         if iteration_target.strip():
             config["iteration_target"] = iteration_target.strip()

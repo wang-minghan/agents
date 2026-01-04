@@ -42,6 +42,7 @@
 - 用户模拟：覆盖路径清单 + 关键截图 + 自动化输出
 - 归档要求：生成 `output/evidence/manifest.json` 与 `output/evidence/evidence_pack_*.zip`
 - 迭代基线：生成 `output/evidence/ast/ast_baseline.md` 记录现有代码结构
+- 断点与基线同步：中断后从 `output/evidence/collaboration_state.json` 续跑；证据与设计文档同步到迭代目标根目录 `evidence/`
 
 四、输入鲁棒性标准
 - 输入契约：类型、范围、空值、默认值、容错策略
@@ -65,7 +66,7 @@
 
 七、默认策略（零配置）
 - summary-only 上下文输出
-- 测试逐文件执行
+ - 测试默认单次运行（-x 早停）
 - 审批仅保留“项目/规划最终发布确认”
 - 其余流程自动执行，无需人工选择
 - 测试通过后执行用户模拟脚本（如存在），失败即阻断交付

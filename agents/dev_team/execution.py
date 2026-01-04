@@ -42,10 +42,7 @@ class LocalUnsafeExecutor(CodeExecutor):
             test_files = self._discover_pytests(path)
             if not test_files:
                 return "SKIPPED: No tests found."
-            if len(test_files) > 1:
-                cmd = [["pytest", str(test_file)] for test_file in test_files]
-            else:
-                cmd = ["pytest", str(test_files[0])]
+            cmd = ["pytest", "-x", str(path)]
         else:
             cmd = self._normalize_cmd(path)
         if not cmd:

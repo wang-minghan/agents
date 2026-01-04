@@ -2,6 +2,7 @@ import json
 import hashlib
 import os
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Callable
@@ -44,6 +45,7 @@ class BaseOrchestrator:
 
         print(f"Directory: {self.output_dir}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.output_dir / "evidence" / "collaboration_state.json"
 
         if code_executor:
             self.code_executor = code_executor
@@ -54,7 +56,12 @@ class BaseOrchestrator:
         target = self.config.get("iteration_target")
         if target:
             self.iteration_target = Path(str(target)).expanduser().resolve()
-            self._stage_iteration_target()
+        self._resume_state: Optional[Dict[str, Any]] = self._load_resume_state()
+        if self.iteration_target:
+            if self._resume_state:
+                print("⚠️ 检测到协作状态，跳过迭代目标拷贝，直接恢复。")
+            else:
+                self._stage_iteration_target()
 
         self.shared_memory.global_context["requirements"] = ""
 
@@ -65,6 +72,8 @@ class BaseOrchestrator:
         self.run_reports: List[Dict[str, Any]] = []
         self.report_enabled = bool(self.config.get("report", {}).get("enabled", True))
         self.report_path = self._resolve_report_path()
+        self._last_sync_at: Optional[float] = None
+        self._last_synced_saved_files: set[str] = set()
 
     def _resolve_report_path(self) -> Path:
         report_path = self.config.get("report", {}).get("output_path")
@@ -75,6 +84,140 @@ class BaseOrchestrator:
         else:
             report_path = self.output_dir / "collaboration_report.json"
         return report_path
+
+    def _resume_state_matches(self, state: Dict[str, Any]) -> bool:
+        if not isinstance(state, dict):
+            return False
+        if state.get("status") != "in_progress":
+            return False
+        session_key = self.config.get("session_key")
+        if session_key and state.get("session_key") != session_key:
+            return False
+        if self.iteration_target:
+            stored_target = state.get("iteration_target")
+            if stored_target and Path(stored_target).resolve() != self.iteration_target:
+                return False
+        output_dir = state.get("output_dir")
+        if output_dir and Path(output_dir).resolve() != self.output_dir.resolve():
+            return False
+        return True
+
+    def _load_resume_state(self) -> Optional[Dict[str, Any]]:
+        if not self.state_path.exists():
+            return None
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not self._resume_state_matches(payload):
+            return None
+        return payload
+
+    def _snapshot_memory(self) -> Dict[str, Any]:
+        return {
+            "global_context": dict(self.shared_memory.global_context),
+            "role_outputs": {k: list(v) for k, v in self.shared_memory.role_outputs.items()},
+            "qa_feedback": list(self.shared_memory.qa_feedback),
+            "saved_files": list(self.shared_memory.saved_files.keys()),
+        }
+
+    def _apply_resume_state(self, state: Dict[str, Any]) -> int:
+        memory = state.get("shared_memory", {})
+        if isinstance(memory, dict):
+            self.shared_memory.global_context = dict(memory.get("global_context", {}))
+            self.shared_memory.role_outputs = {
+                k: list(v) for k, v in memory.get("role_outputs", {}).items()
+            }
+            self.shared_memory.qa_feedback = list(memory.get("qa_feedback", []))
+            saved_files = memory.get("saved_files", [])
+            self.shared_memory.saved_files = {path: "saved" for path in saved_files}
+        completed_rounds = state.get("completed_rounds")
+        if not isinstance(completed_rounds, int):
+            completed_rounds = len(self.run_reports)
+        return completed_rounds
+
+    def _save_resume_state(self, completed_rounds: int, status: str) -> None:
+        payload = {
+            "version": 1,
+            "status": status,
+            "completed_rounds": completed_rounds,
+            "run_reports": self.run_reports,
+            "shared_memory": self._snapshot_memory(),
+            "session_key": self.config.get("session_key"),
+            "iteration_target": str(self.iteration_target) if self.iteration_target else None,
+            "output_dir": str(self.output_dir),
+            "saved_at": self._utcnow(),
+        }
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            print(f"    ⚠️ 状态持久化失败: {exc}")
+
+    def _resume_if_available(self, max_rounds: int) -> int:
+        if not self._resume_state:
+            return 1
+        self.run_reports = list(self._resume_state.get("run_reports", []))
+        completed_rounds = self._apply_resume_state(self._resume_state)
+        if completed_rounds < len(self.run_reports):
+            completed_rounds = len(self.run_reports)
+        if completed_rounds >= max_rounds:
+            print("⚠️ 断点轮次已达到最大轮次，需提高 max_rounds 才能继续。")
+        else:
+            print(f"⚠️ 已恢复到第 {completed_rounds} 轮，继续执行第 {completed_rounds + 1} 轮。")
+        return completed_rounds + 1
+
+    def _sync_iteration_artifacts(self) -> None:
+        if not self.iteration_target:
+            return
+        target_root = self.iteration_target
+        evidence_src = self.output_dir / "evidence"
+        current_saved_files = set(self.shared_memory.saved_files.keys())
+        if not evidence_src.exists() and not current_saved_files:
+            return
+
+        latest_mtime = 0.0
+        if evidence_src.exists():
+            for item in evidence_src.rglob("*"):
+                if not item.is_file():
+                    continue
+                try:
+                    latest_mtime = max(latest_mtime, item.stat().st_mtime)
+                except OSError:
+                    continue
+
+        if (
+            self._last_sync_at is not None
+            and latest_mtime <= self._last_sync_at
+            and current_saved_files == self._last_synced_saved_files
+        ):
+            return
+
+        if evidence_src.exists():
+            for item in evidence_src.rglob("*"):
+                if not item.is_file():
+                    continue
+                rel = item.relative_to(evidence_src)
+                dest = target_root / "evidence" / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest)
+        docs_target = target_root / "evidence" / "docs"
+        for saved_path in self.shared_memory.saved_files.keys():
+            path_obj = Path(saved_path)
+            if path_obj.suffix.lower() != ".md":
+                continue
+            try:
+                rel_doc = path_obj.resolve().relative_to(self.output_dir.resolve())
+            except ValueError:
+                continue
+            dest_doc = docs_target / rel_doc
+            dest_doc.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path_obj, dest_doc)
+        self._last_sync_at = max(latest_mtime, time.time())
+        self._last_synced_saved_files = current_saved_files
 
     @staticmethod
     def _utcnow() -> str:
@@ -177,29 +320,33 @@ class BaseOrchestrator:
     def _build_project_context(self, root: Path, max_files: int = 80, max_chars: int = 4000) -> str:
         lines: list[str] = [f"root={root}"]
         skip_dirs = {".git", ".venv", "__pycache__", ".pytest_cache", "output", "data"}
+        allowed_suffixes = {".py", ".md", ".yaml", ".yml", ".txt"}
+        total_len = len(lines[0])
         count = 0
-        for path in sorted(root.rglob("*")):
-            if any(part in skip_dirs for part in path.parts):
-                continue
-            if not path.is_file():
-                continue
-            rel = path.relative_to(root)
-            suffix = path.suffix.lower()
-            if suffix not in {".py", ".md", ".yaml", ".yml", ".txt"}:
-                continue
-            try:
-                content = path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            if suffix == ".py":
-                summary = CodeSummarizer.summarize_python(content)
-            else:
-                summary = content[:400]
-            lines.append(f"\n[{rel}]\n{summary}")
-            count += 1
-            if count >= max_files:
-                break
-            if sum(len(line) for line in lines) > max_chars:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [name for name in sorted(dirnames) if name not in skip_dirs]
+            for filename in sorted(filenames):
+                path = Path(dirpath) / filename
+                suffix = path.suffix.lower()
+                if suffix not in allowed_suffixes:
+                    continue
+                rel = path.relative_to(root)
+                try:
+                    if suffix == ".py":
+                        content = path.read_text(encoding="utf-8", errors="ignore")
+                        summary = CodeSummarizer.summarize_python(content)
+                    else:
+                        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                            summary = f.read(400)
+                except Exception:
+                    continue
+                entry = f"\n[{rel}]\n{summary}"
+                lines.append(entry)
+                total_len += len(entry)
+                count += 1
+                if count >= max_files or total_len > max_chars:
+                    break
+            if count >= max_files or total_len > max_chars:
                 break
         combined = "\n".join(lines)
         if len(combined) > max_chars:
@@ -270,7 +417,9 @@ class BaseOrchestrator:
             else:
                 diff = ImageChops.difference(base_img, impl_img)
                 total_pixels = base_img.size[0] * base_img.size[1]
-                mismatched = sum(1 for px in diff.getdata() if px != (0, 0, 0))
+                diff_l = diff.convert("L")
+                histogram = diff_l.histogram()
+                mismatched = total_pixels - histogram[0]
                 ratio = mismatched / total_pixels if total_pixels else 0.0
                 diff_path = evidence_dir / "diff.png"
                 diff.save(diff_path)
@@ -390,6 +539,7 @@ class BaseOrchestrator:
     def run_collaboration(self, max_rounds: int = 3):
         started_at = self._utcnow()
         self.run_reports = []
+        start_round = self._resume_if_available(max_rounds)
         if not self.agents:
             print("❌ 错误: 团队未初始化或没有工程师角色。")
             report = self._build_report("no_engineers", started_at)
@@ -401,9 +551,19 @@ class BaseOrchestrator:
                 "report": report,
             }
 
+        if start_round > max_rounds:
+            report = self._build_report("max_rounds_reached", started_at)
+            self._write_report(report)
+            self._save_resume_state(max_rounds, "max_rounds_reached")
+            return {
+                "status": "max_rounds_reached",
+                "outputs": self.shared_memory.get_all_outputs(),
+                "report": report,
+            }
+
         print(f"\n🚀 启动 TDD 协作流程 (最大轮次: {max_rounds})...")
         run_status = "max_rounds_reached"
-        for round_num in range(1, max_rounds + 1):
+        for round_num in range(start_round, max_rounds + 1):
             print(f"\n🔄 --- 第 {round_num} 轮迭代 ---")
             round_report = {
                 "round": round_num,
@@ -483,9 +643,13 @@ class BaseOrchestrator:
                 round_report["qa_feedback"] = qa_reports
                 print(f"    📝 QA 反馈已记录")
             self.run_reports.append(round_report)
+            self._save_resume_state(round_num, "in_progress")
+            self._sync_iteration_artifacts()
 
         report = self._build_report(run_status, started_at)
         self._write_report(report)
+        self._save_resume_state(len(self.run_reports), run_status)
+        self._sync_iteration_artifacts()
         return {
             "status": run_status,
             "outputs": self.shared_memory.get_all_outputs(),

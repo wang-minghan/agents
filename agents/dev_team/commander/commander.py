@@ -204,6 +204,7 @@ class Commander(BaseOrchestrator):
         """
         started_at = self._utcnow()
         self.run_reports = []
+        start_round = self._resume_if_available(max_rounds)
         
         if not self.agents:
             print("❌ 错误: 团队未初始化")
@@ -216,13 +217,23 @@ class Commander(BaseOrchestrator):
                 "report": report,
             }
         
+        if start_round > max_rounds:
+            report = self._build_report("max_rounds_reached", started_at)
+            self._write_report(report)
+            self._save_resume_state(max_rounds, "max_rounds_reached")
+            return {
+                "status": "max_rounds_reached",
+                "outputs": self.shared_memory.get_all_outputs(),
+                "report": report,
+            }
+
         print(f"\n🚀 AI Commander 协作流程启动 (最大轮次: {max_rounds})...")
         
         run_status = "max_rounds_reached"
         testing_cfg = self.config.get("testing", {})
         testing_enabled = testing_cfg.get("enabled", True)
         
-        for round_num in range(1, max_rounds + 1):
+        for round_num in range(start_round, max_rounds + 1):
             print(f"\n{'='*60}")
             print(f"🔄 第 {round_num} 轮迭代")
             print(f"{'='*60}")
@@ -302,10 +313,14 @@ class Commander(BaseOrchestrator):
                 break
             
             self.run_reports.append(round_report)
+            self._save_resume_state(round_num, "in_progress")
+            self._sync_iteration_artifacts()
         
         # 生成最终报告
         report = self._build_report(run_status, started_at)
         self._write_report(report)
+        self._save_resume_state(len(self.run_reports), run_status)
+        self._sync_iteration_artifacts()
         
         return {
             "status": run_status,

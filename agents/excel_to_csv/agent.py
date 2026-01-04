@@ -697,6 +697,7 @@ def _render_audit(audit: dict[str, object]) -> str:
         f"- 主题: {audit.get('topic', '')}",
         f"- 版本: {audit.get('version', '')}",
         f"- 工作表: {audit.get('sheet_name', '')}",
+        f"- 快速模式: {bool(audit.get('fast_mode', False))}",
         f"- 表头行: {audit.get('header_rows', [])}",
         f"- 转置: {audit.get('transpose', False)}",
         f"- 删除空行: {audit.get('drop_empty_rows', False)}",
@@ -711,6 +712,39 @@ def _render_audit(audit: dict[str, object]) -> str:
     ]
     return "\n".join(lines)
 
+
+def _fast_review_and_transform(
+    df: pd.DataFrame,
+    sheet_name: str,
+    file_stem: str,
+    allow_auto_header: bool,
+) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
+    version = _extract_version(file_stem)
+    inferred_topic, inferred_table = _infer_topic_table_from_name(file_stem, version)
+    header_rows = _auto_header_rows(df) if allow_auto_header else []
+    if header_rows:
+        df = _merge_header_rows(df, header_rows)
+    df = _normalize_columns(df)
+    df = _post_process_output(df, {})
+    audit = {
+        "topic": inferred_topic,
+        "table_name": inferred_table,
+        "version": version,
+        "sheet_name": sheet_name,
+        "header_rows": header_rows,
+        "rename_map": {},
+        "transpose": False,
+        "summary": "\n".join(
+            [
+                "总目标: 快速生成结构可读的 CSV。",
+                "结构要点: 仅执行基础表头合并与列名清洗。",
+                "结论: 快速模式已完成，未调用 LLM。",
+            ]
+        ),
+        "fast_mode": True,
+    }
+    review = _rule_based_review(df)
+    return df, audit, review
 
 def _ai_review_and_transform(
     llm: ChatOpenAI,
@@ -1031,6 +1065,7 @@ def _process_sheet(
     output_dir: Path,
     llm_config: dict[str, object],
     max_rounds: int,
+    skip_llm: bool = False,
 ) -> None:
     sheet_label = sheet_name or source_path.stem
     trace_token = _start_task_trace(source_path, str(sheet_label), output_dir)
@@ -1051,75 +1086,91 @@ def _process_sheet(
                 header=None,
                 keep_default_na=False,
             )
-        model = _select_model(df, sheet_label, llm_config)
-        llm = _get_llm(llm_config, model_override=model)
         allow_auto_header = (not is_csv) and _should_auto_header(df)
         version = _extract_version(source_path.stem)
         inferred_topic, inferred_table = _infer_topic_table_from_name(
             source_path.stem, version
         )
-        df, audit = _ai_review_and_transform(
-            llm,
-            df,
-            sheet_name=str(sheet_label),
-            file_stem=source_path.stem,
-            allow_auto_header=allow_auto_header,
-        )
-        print(
-            f"[excel_to_csv] initial_review done file={source_path.name} sheet={sheet_label}",
-            flush=True,
-        )
-        topic = str(audit.get("topic") or inferred_topic or source_path.stem)
-        table_name = str(audit.get("table_name") or inferred_table or sheet_label)
-        version = str(audit.get("version") or version or "v1")
         final_review: dict[str, object] = {}
         final_plan: dict[str, object] = {}
-        allow_long_format = bool(llm_config.get("allow_long_format", True))
-        seen_states: set[str] = set()
-        for _round in range(1, max_rounds + 1):
+        if skip_llm:
             print(
-                f"[excel_to_csv] final_review round={_round} file={source_path.name} sheet={sheet_label}",
+                f"[excel_to_csv] fast_mode enabled file={source_path.name} sheet={sheet_label}",
                 flush=True,
             )
-            final_review = _ai_final_review(llm, df, topic, table_name, version)
-            if bool(final_review.get("approved")):
-                break
+            df, audit, final_review = _fast_review_and_transform(
+                df,
+                sheet_name=str(sheet_label),
+                file_stem=source_path.stem,
+                allow_auto_header=allow_auto_header,
+            )
+            topic = str(audit.get("topic") or inferred_topic or source_path.stem)
+            table_name = str(audit.get("table_name") or inferred_table or sheet_label)
+            version = str(audit.get("version") or version or "v1")
+        else:
+            model = _select_model(df, sheet_label, llm_config)
+            llm = _get_llm(llm_config, model_override=model)
+            df, audit = _ai_review_and_transform(
+                llm,
+                df,
+                sheet_name=str(sheet_label),
+                file_stem=source_path.stem,
+                allow_auto_header=allow_auto_header,
+            )
             print(
-                f"[excel_to_csv] feedback_plan round={_round} file={source_path.name} sheet={sheet_label}",
+                f"[excel_to_csv] initial_review done file={source_path.name} sheet={sheet_label}",
                 flush=True,
             )
-            plan = _ai_feedback_plan(llm, df, final_review, topic, table_name, version)
-            before_sig = _df_signature(df)
-            df, final_plan = _apply_feedback(
-                df, plan, allow_long_format, allow_auto_header
-            )
-            after_sig = _df_signature(df)
-            state_sig = _stable_signature(
-                {
-                    "review": final_review,
-                    "plan": final_plan,
-                    "df": after_sig,
-                }
-            )
-            if state_sig in seen_states or after_sig == before_sig:
-                final_review = {
-                    "approved": True,
-                    "issues": final_review.get("issues", []),
-                    "suggestions": final_review.get("suggestions", []),
-                    "summary": "\n".join(
-                        [
-                            "总目标: 输出结构清晰可读的表格。",
-                            "结构要点: 检测到重复整改且结构未变化。",
-                            "结论: 检测到循环，自动通过。",
-                        ]
-                    ),
-                }
+            topic = str(audit.get("topic") or inferred_topic or source_path.stem)
+            table_name = str(audit.get("table_name") or inferred_table or sheet_label)
+            version = str(audit.get("version") or version or "v1")
+            allow_long_format = bool(llm_config.get("allow_long_format", True))
+            seen_states: set[str] = set()
+            for _round in range(1, max_rounds + 1):
                 print(
-                    f"[excel_to_csv] loop_detected auto_approve file={source_path.name} sheet={sheet_label}",
+                    f"[excel_to_csv] final_review round={_round} file={source_path.name} sheet={sheet_label}",
                     flush=True,
                 )
-                break
-            seen_states.add(state_sig)
+                final_review = _ai_final_review(llm, df, topic, table_name, version)
+                if bool(final_review.get("approved")):
+                    break
+                print(
+                    f"[excel_to_csv] feedback_plan round={_round} file={source_path.name} sheet={sheet_label}",
+                    flush=True,
+                )
+                plan = _ai_feedback_plan(llm, df, final_review, topic, table_name, version)
+                before_sig = _df_signature(df)
+                df, final_plan = _apply_feedback(
+                    df, plan, allow_long_format, allow_auto_header
+                )
+                after_sig = _df_signature(df)
+                state_sig = _stable_signature(
+                    {
+                        "review": final_review,
+                        "plan": final_plan,
+                        "df": after_sig,
+                    }
+                )
+                if state_sig in seen_states or after_sig == before_sig:
+                    final_review = {
+                        "approved": True,
+                        "issues": final_review.get("issues", []),
+                        "suggestions": final_review.get("suggestions", []),
+                        "summary": "\n".join(
+                            [
+                                "总目标: 输出结构清晰可读的表格。",
+                                "结构要点: 检测到重复整改且结构未变化。",
+                                "结论: 检测到循环，自动通过。",
+                            ]
+                        ),
+                    }
+                    print(
+                        f"[excel_to_csv] loop_detected auto_approve file={source_path.name} sheet={sheet_label}",
+                        flush=True,
+                    )
+                    break
+                seen_states.add(state_sig)
+
 
         out_name = f"{topic}_{table_name}_{version}.csv"
         out_path = output_dir / out_name
@@ -1153,7 +1204,12 @@ def _process_sheet(
 
 
 def convert_excel_dir(
-    input_dir: Path, output_dir: Path, llm_config: dict[str, object], max_rounds: int = 5
+    input_dir: Path,
+    output_dir: Path,
+    llm_config: dict[str, object],
+    max_rounds: int = 5,
+    max_workers: int | None = None,
+    skip_llm: bool = False,
 ) -> None:
     input_dir = input_dir.resolve()
     output_dir = output_dir.resolve()
@@ -1170,14 +1226,20 @@ def convert_excel_dir(
                 out_parent,
                 llm_config,
                 max_rounds,
+                skip_llm,
             )
             continue
 
         excel = pd.ExcelFile(source_path)
-        max_workers = _safe_int(
+        configured_workers = _safe_int(
             llm_config.get("max_workers", min(4, (os.cpu_count() or 2))), 2
         )
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        worker_limit = (
+            _safe_int(max_workers, configured_workers)
+            if max_workers is not None
+            else configured_workers
+        )
+        with ThreadPoolExecutor(max_workers=worker_limit) as executor:
             futures = []
             for sheet_name in excel.sheet_names:
                 futures.append(
@@ -1188,17 +1250,27 @@ def convert_excel_dir(
                         out_parent,
                         llm_config,
                         max_rounds,
+                        skip_llm,
                     )
                 )
             for future in as_completed(futures):
                 future.result()
 
 
-def _run(payload: dict[str, str]) -> dict[str, str]:
+def _run(payload: dict[str, object]) -> dict[str, str]:
     input_dir = Path(payload["input_dir"])
     output_dir = Path(payload["output_dir"])
     config_path = Path(payload.get("llm_config", "configs/llm.yaml"))
     langsmith_path = Path(payload.get("langsmith_config", "configs/langsmith.yaml"))
+    max_rounds = _safe_int(payload.get("max_rounds"), 5)
+    max_workers_raw = payload.get("max_workers")
+    max_workers = (
+        _safe_int(max_workers_raw, 0) if max_workers_raw is not None else None
+    )
+    if max_workers == 0:
+        max_workers = None
+    skip_llm_flag = str(payload.get("skip_llm", "")).lower()
+    skip_llm = skip_llm_flag in {"1", "true", "yes", "y", "on"}
     langsmith_config = _load_langsmith_config(langsmith_path)
     _configure_langsmith(langsmith_config)
     if langsmith_config:
@@ -1213,7 +1285,14 @@ def _run(payload: dict[str, str]) -> dict[str, str]:
             flush=True,
         )
     llm_config = _load_llm_config(config_path)
-    convert_excel_dir(input_dir, output_dir, llm_config)
+    convert_excel_dir(
+        input_dir,
+        output_dir,
+        llm_config,
+        max_rounds=max_rounds,
+        max_workers=max_workers,
+        skip_llm=skip_llm,
+    )
     return {"status": "ok", "input_dir": str(input_dir), "output_dir": str(output_dir)}
 
 
@@ -1237,6 +1316,23 @@ def _run_cli() -> None:
         default="configs/langsmith.yaml",
         help="Path to LangSmith config YAML",
     )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=5,
+        help="Maximum AI review iterations per sheet (default: 5)",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="Override per-file sheet worker count",
+    )
+    parser.add_argument(
+        "--skip-llm",
+        action="store_true",
+        help="Skip LLM review for faster processing",
+    )
     args = parser.parse_args()
 
     agent = build_agent()
@@ -1246,6 +1342,9 @@ def _run_cli() -> None:
             "output_dir": args.output,
             "llm_config": args.llm_config,
             "langsmith_config": args.langsmith_config,
+            "max_rounds": args.max_rounds,
+            "max_workers": args.max_workers,
+            "skip_llm": args.skip_llm,
         }
     )
 

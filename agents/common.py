@@ -119,20 +119,39 @@ def save_files_from_content(content: str, output_base_dir: Path) -> List[str]:
 
     base_path = output_base_dir.resolve()
 
+    warned_paths = set()
+
     for path, file_content in matches:
         # 清理路径 & 安全检查
-        clean_path = path.strip().replace('\\', '/')
-        # Prevent absolute paths or traversal
-        if clean_path.startswith('/') or '..' in clean_path:
-                print(f"    ⚠️ 忽略不安全的文件路径: {clean_path}")
-                continue
-                
+        clean_path = path.strip().replace("\\", "/")
+        if not clean_path:
+            continue
+
         try:
-            full_path = (base_path / clean_path).resolve()
-            
-            # Double check that the resolved path is still under output_base
-            if not str(full_path).startswith(str(base_path)):
-                print(f"    ⚠️ 路径越界保护: {clean_path}")
+            path_obj = Path(clean_path)
+            if path_obj.is_absolute():
+                full_path = path_obj.resolve()
+                try:
+                    rel_path = full_path.relative_to(base_path)
+                except ValueError:
+                    print(f"    ⚠️ 忽略不安全的文件路径: {clean_path}")
+                    continue
+                if clean_path not in warned_paths:
+                    print(f"    ⚠️ 绝对路径已归一化: {clean_path} -> {rel_path.as_posix()}")
+                    warned_paths.add(clean_path)
+            else:
+                if ".." in path_obj.parts:
+                    print(f"    ⚠️ 忽略不安全的文件路径: {clean_path}")
+                    continue
+                full_path = (base_path / path_obj).resolve()
+                try:
+                    full_path.relative_to(base_path)
+                except ValueError:
+                    print(f"    ⚠️ 路径越界保护: {clean_path}")
+                    continue
+
+            if full_path.exists() and full_path.is_dir():
+                print(f"    ⚠️ 忽略目录路径: {clean_path}")
                 continue
             
             full_path.parent.mkdir(parents=True, exist_ok=True)

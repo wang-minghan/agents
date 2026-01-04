@@ -84,6 +84,27 @@ def render_excel_to_csv(base_dir: Path) -> None:
             st.markdown("建议：将输入按业务主题分目录，便于审计归档。")
             st.markdown("</div>", unsafe_allow_html=True)
 
+    with st.expander("高级设置（性能优化）", expanded=False):
+        settings_left, settings_right = st.columns([1, 1])
+        with settings_left:
+            max_rounds = st.number_input(
+                "最大审核轮次",
+                min_value=1,
+                max_value=8,
+                value=5,
+                help="轮次越少，速度越快；建议 3-5。",
+            )
+            max_workers = st.number_input(
+                "每文件并发线程",
+                min_value=0,
+                max_value=16,
+                value=0,
+                help="0 表示使用配置默认值。",
+            )
+        with settings_right:
+            skip_llm = st.checkbox("快速模式（跳过 AI 结构审核）", value=False)
+            st.caption("快速模式适用于结构稳定的表格，能显著缩短耗时。")
+
     run_col, info_col = st.columns([1, 1.5])
     with run_col:
         run_clicked = st.button("运行转换", use_container_width=True)
@@ -102,6 +123,11 @@ def render_excel_to_csv(base_dir: Path) -> None:
             "--llm-config",
             llm_config,
         ]
+        cmd.extend(["--max-rounds", str(int(max_rounds))])
+        if int(max_workers) > 0:
+            cmd.extend(["--max-workers", str(int(max_workers))])
+        if skip_llm:
+            cmd.append("--skip-llm")
         st.subheader("运行过程")
         status_box = st.empty()
         log_box = st.empty()
@@ -142,16 +168,33 @@ def render_excel_to_csv(base_dir: Path) -> None:
             log_box.code("完成", language="text")
 
     st.divider()
-    st.subheader("最近的审核报告")
+    st.subheader("执行概览")
     output_path = Path(output_dir)
     if output_path.exists():
-        audits = sorted(
-            output_path.rglob("*__audit.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
+        csv_files = list(output_path.rglob("*.csv"))
+        audit_files = list(output_path.rglob("*__audit.md"))
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("CSV 输出", len(csv_files))
+        metric_cols[1].metric("审核报告", len(audit_files))
+        latest_time = max(
+            [p.stat().st_mtime for p in audit_files], default=None
         )
-        for audit in audits[:10]:
-            with st.expander(str(audit)):
-                st.code(audit.read_text(encoding="utf-8"), language="markdown")
+        metric_cols[2].metric(
+            "最近更新",
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(latest_time))
+            if latest_time
+            else "无",
+        )
     else:
         st.info("未找到输出目录。")
+        return
+
+    st.subheader("最近的审核报告")
+    audits = sorted(
+        output_path.rglob("*__audit.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for audit in audits[:10]:
+        with st.expander(str(audit)):
+            st.code(audit.read_text(encoding="utf-8"), language="markdown")

@@ -85,6 +85,7 @@ class CrossValidator:
             "consistency_threshold", 
             self.CONSISTENCY_THRESHOLD
         )
+        self.max_similarity_chars = self.config.get("max_similarity_chars", 3000)
         self.error_knowledge_base: Set[str] = set()  # 全局错误知识库
     
     def validate(
@@ -267,12 +268,19 @@ class CrossValidator:
         
         # 2. 基于结果相似度的冲突
         result_items = list(results.items())
+        prepared_texts = {
+            name: self._prepare_text_for_similarity(str(result))
+            for name, result in result_items
+        }
         for i in range(len(result_items)):
             for j in range(i + 1, len(result_items)):
                 name1, result1 = result_items[i]
                 name2, result2 = result_items[j]
                 
-                similarity = self._calculate_similarity(str(result1), str(result2))
+                similarity = self._calculate_similarity(
+                    prepared_texts[name1],
+                    prepared_texts[name2],
+                )
                 
                 # 如果结果差异过大，可能存在冲突
                 if similarity < 0.3:
@@ -289,6 +297,19 @@ class CrossValidator:
                     conflicts.append(conflict)
         
         return conflicts
+
+    def _prepare_text_for_similarity(self, text: str) -> str:
+        """
+        预处理用于相似度比较的文本，控制计算成本。
+        """
+        if not text:
+            return ""
+        limit = self.max_similarity_chars
+        if limit is None or limit <= 0 or len(text) <= limit:
+            return text
+        head = text[: limit // 2]
+        tail = text[-(limit // 2):]
+        return f"{head}\n...[Truncated]...\n{tail}"
     
     def _calculate_similarity(self, text1: str, text2: str) -> float:
         """
@@ -296,6 +317,8 @@ class CrossValidator:
         
         使用SequenceMatcher算法
         """
+        if text1 == text2:
+            return 1.0
         return SequenceMatcher(None, text1, text2).ratio()
     
     def _determine_severity(self, score: float) -> str:

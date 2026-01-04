@@ -101,6 +101,7 @@ def main():
     
     # 加载配置
     dev_team_config = load_config()
+    dev_team_config["session_key"] = user_input
     if iteration_target:
         dev_team_config["iteration_target"] = iteration_target
     

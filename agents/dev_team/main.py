@@ -46,6 +46,14 @@ def main():
         json.dump(final_results, f, ensure_ascii=False, indent=2)
     print(f"\n📂 详细结果已保存至: {output_file}")
     print(f"📂 生成的代码位于: agents/dev_team/output/codebase/")
+    if isinstance(final_results, dict):
+        status = final_results.get("status")
+        report = final_results.get("report", {})
+        report_path = report.get("report_path")
+        if status:
+            print(f"📌 协作状态: {status}")
+        if report_path:
+            print(f"📄 协作报告: {report_path}")
 
 if __name__ == "__main__":
     main()

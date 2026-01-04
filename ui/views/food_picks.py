@@ -12,7 +12,7 @@ import streamlit.components.v1 as components
 import yaml
 
 from agents.restaurant_recommender.agent import recommend_restaurants
-from ui.theme import hero_html, poster_palette, price_section_html
+from ui.theme.theme import hero_html, poster_palette, price_section_html
 
 COMPONENT_DIR = Path(__file__).resolve().parent.parent / "components" / "geolocation"
 geolocation_component = components.declare_component("geolocation", path=str(COMPONENT_DIR))

@@ -96,5 +96,6 @@ def test_architecture_and_safety(tmp_path: Path):
 
     orch_early = Orchestrator(config, output_dir=str(test_output_dir), code_executor=MockPassExecutor())
     orch_early.agents = [MockMemoryAgent({"role_name": "Dev"}, config, orch_early.shared_memory, test_output_dir)]
-    orch_early.run_collaboration(max_rounds=5)
+    result = orch_early.run_collaboration(max_rounds=5)
     assert any(path.endswith("a.txt") for path in orch_early.shared_memory.saved_files)
+    assert result["status"] == "passed"

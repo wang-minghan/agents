@@ -4,8 +4,8 @@ roles:
   qa:
     prompt_path: "agents/dev_team/prompts/qa.txt"
 
-task_planner:
-  output_path: "agents/task_planner/output/jd.json"  # 假设 task_planner 的输出路径
+report:
+  enabled: true
 
 collaboration:
   force_qa_on_success: false

@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Any, Dict
 from langchain_core.prompts import PromptTemplate

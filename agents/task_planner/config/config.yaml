@@ -1,6 +1,8 @@
 workflow:
   max_iterations: 3
   validation_threshold: 0.8
+  snapshot_enabled: true
+  snapshot_dir: output/snapshots
 
 roles:
   requirement_analyzer:

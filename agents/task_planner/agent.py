@@ -1,6 +1,6 @@
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
-import yaml
+from datetime import datetime, timezone
 import json
 from langchain_core.runnables import RunnableLambda
 
@@ -64,6 +64,44 @@ def _validate_validator_output(payload: Any) -> Dict[str, Any]:
         raise ValueError("JD validator must include 'passed' or 'score'.")
     return data
 
+def _format_constraints(constraints: Any) -> Optional[str]:
+    if constraints is None:
+        return None
+    payload = _coerce_json(constraints)
+    if isinstance(payload, (dict, list)):
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    return str(payload)
+
+def _resolve_snapshot_dir(config: Dict[str, Any]) -> Optional[Path]:
+    workflow_cfg = config.get("workflow", {})
+    if not workflow_cfg.get("snapshot_enabled", False):
+        return None
+    snapshot_dir = workflow_cfg.get("snapshot_dir", "output/snapshots")
+    base_dir = Path(config.get("agent_root", Path(__file__).parent))
+    path = Path(snapshot_dir)
+    if not path.is_absolute():
+        path = base_dir / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _maybe_save_snapshot(config: Dict[str, Any], payload: Dict[str, Any]) -> Optional[Path]:
+    snapshot_dir = _resolve_snapshot_dir(config)
+    if not snapshot_dir:
+        return None
+    status = payload.get("result", {}).get("status", "unknown")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    snapshot_path = snapshot_dir / f"{timestamp}_{status}.json"
+    with open(snapshot_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+    return snapshot_path
+
+def _finalize_result(result: Dict[str, Any], config: Dict[str, Any], input_data: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot_payload = {"input": input_data, "result": result}
+    snapshot_path = _maybe_save_snapshot(config, snapshot_payload)
+    if snapshot_path:
+        result["snapshot_path"] = str(snapshot_path)
+    return result
+
 def load_config(config_path: str = None) -> Dict[str, Any]:
     # Wrapper to maintain compatible signature but use common logic with correct base
     base_dir = Path(__file__).parent.resolve()
@@ -80,9 +118,13 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
     execution_feedback = input_data.get("execution_feedback")
     planner_state = input_data.get("planner_state")
     user_feedback = input_data.get("user_feedback")
+    constraints = input_data.get("constraints")
     
     if execution_feedback:
         user_input += f"\n\n[Pre-existing Execution Feedback]: {execution_feedback}"
+    constraints_text = _format_constraints(constraints)
+    if constraints_text:
+        user_input += f"\n\n[Constraints]\n{constraints_text}"
 
     max_iterations = config.get("workflow", {}).get("max_iterations", 3)
     validation_threshold = config.get("workflow", {}).get("validation_threshold", 0.8)
@@ -101,10 +143,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
                 if "initial_jd" not in role and role.get("role_name") not in current_role_jds:
                     raise ValueError("Planner state role missing 'initial_jd' and no current_jds entry.")
         except Exception as e:
-            return {
+            return _finalize_result({
                 "status": "error",
                 "error": f"Planner state invalid: {e}",
-            }
+            }, config, input_data)
         print(">>> 已检测到 planner_state，跳过需求分析与任务拆解，直接继续优化/验证...")
     else:
         # 1. 需求分析
@@ -113,10 +155,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         try:
             requirements = _validate_requirements(analyzer.invoke({"user_input": user_input}))
         except Exception as e:
-            return {
+            return _finalize_result({
                 "status": "error",
                 "error": f"Requirement analysis failed: {e}"
-            }
+            }, config, input_data)
         print(f"    核心目标: {requirements.get('goal')}")
 
         # 2. 任务分类与角色拆解
@@ -126,10 +168,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
             classification = classifier.invoke({"requirements": json.dumps(requirements, ensure_ascii=False)})
             tasks, roles = _validate_classification(classification)
         except Exception as e:
-            return {
+            return _finalize_result({
                 "status": "error",
                 "error": f"Task classification failed: {e}"
-            }
+            }, config, input_data)
         print(f"    拆解出 {len(tasks)} 个任务, {len(roles)} 个角色")
     
     # 迭代优化流程
@@ -203,10 +245,10 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
         try:
             validation_result = _validate_validator_output(validator.invoke(validation_input))
         except Exception as e:
-            return {
+            return _finalize_result({
                 "status": "error",
                 "error": f"JD validation failed: {e}"
-            }
+            }, config, input_data)
 
         score = validation_result.get("score")
         is_passed = validation_result.get("passed", False)
@@ -224,7 +266,7 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
             # 如果存在严重缺失，且有需要用户反馈的问题，则中断流程返回给用户
             if validation_result.get("user_feedback_needed"):
                 print("    !!! 需要用户补充信息 !!!")
-                return {
+                return _finalize_result({
                     "status": "needs_feedback",
                     "requirements": requirements,
                     "tasks": tasks,
@@ -238,7 +280,7 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
                         "current_jds": current_role_jds,
                         "iteration": iteration,
                     },
-                }
+                }, config, input_data)
 
     
     if not final_jds:
@@ -251,13 +293,13 @@ def run_task_planner(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict
             else:
                 final_jds.append({"role_name": role_name, "content": jd_content})
 
-    return {
+    return _finalize_result({
         "status": "completed",
         "requirements": requirements,
         "tasks": tasks,
         "final_jds": final_jds,
         "validation_result": validation_result
-    }
+    }, config, input_data)
 
 def build_agent():
     config = load_config()

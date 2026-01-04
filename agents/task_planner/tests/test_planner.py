@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import MagicMock, patch
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 from agents.task_planner.agent import run_task_planner
 
 class TestTaskPlanner(unittest.TestCase):
@@ -11,7 +13,7 @@ class TestTaskPlanner(unittest.TestCase):
     def test_successful_flow(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
         # Mock Config
         config = {
-            "workflow": {"max_iterations": 2},
+            "workflow": {"max_iterations": 2, "snapshot_enabled": False},
             "roles": {}
         }
         
@@ -54,7 +56,7 @@ class TestTaskPlanner(unittest.TestCase):
     @patch('agents.task_planner.agent.build_optimizer_chain')
     @patch('agents.task_planner.agent.build_validator_chain')
     def test_needs_feedback(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
-        config = {"workflow": {"max_iterations": 1}}
+        config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         
         # Setup basic mocks to proceed to validation
         mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
@@ -77,7 +79,7 @@ class TestTaskPlanner(unittest.TestCase):
     @patch('agents.task_planner.agent.build_analyzer_chain')
     @patch('agents.task_planner.agent.build_classifier_chain')
     def test_invalid_classification(self, mock_classifier, mock_analyzer):
-        config = {"workflow": {"max_iterations": 1}}
+        config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
         mock_classifier.return_value.invoke.return_value = {"tasks": "bad", "roles": []}
 
@@ -91,7 +93,7 @@ class TestTaskPlanner(unittest.TestCase):
     @patch('agents.task_planner.agent.build_optimizer_chain')
     @patch('agents.task_planner.agent.build_validator_chain')
     def test_stringified_analyzer_output(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
-        config = {"workflow": {"max_iterations": 1}}
+        config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
         mock_analyzer.return_value.invoke.return_value = '{"goal": "Test Goal"}'
         mock_classifier.return_value.invoke.return_value = {
             "tasks": [{"id": "T1", "name": "Task 1"}],
@@ -113,7 +115,7 @@ class TestTaskPlanner(unittest.TestCase):
     @patch('agents.task_planner.agent.build_optimizer_chain')
     @patch('agents.task_planner.agent.build_validator_chain')
     def test_resume_from_feedback(self, mock_validator, mock_optimizer):
-        config = {"workflow": {"max_iterations": 1}}
+        config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}}
 
         mock_optimizer.return_value.invoke.return_value = {"role_name": "Dev"}
         mock_validator.return_value.invoke.return_value = {"passed": True, "score": 0.9}
@@ -132,6 +134,56 @@ class TestTaskPlanner(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
+
+    @patch('agents.task_planner.agent.build_analyzer_chain')
+    @patch('agents.task_planner.agent.build_classifier_chain')
+    @patch('agents.task_planner.agent.build_optimizer_chain')
+    @patch('agents.task_planner.agent.build_validator_chain')
+    def test_snapshot_written(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = {
+                "workflow": {
+                    "max_iterations": 1,
+                    "snapshot_enabled": True,
+                    "snapshot_dir": tmpdir,
+                },
+                "roles": {},
+                "agent_root": "/home/minghan/project/agents/agents/task_planner",
+            }
+
+            mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
+            mock_classifier.return_value.invoke.return_value = {
+                "tasks": [{"id": "T1", "name": "Task 1"}],
+                "roles": [{"role_name": "Dev", "initial_jd": "Code it"}],
+            }
+            mock_optimizer.return_value.invoke.return_value = {"role_name": "Dev"}
+            mock_validator.return_value.invoke.return_value = {"passed": True, "score": 0.9}
+
+            result = run_task_planner({"user_input": "in"}, config)
+
+            snapshot_path = result.get("snapshot_path")
+            self.assertIsNotNone(snapshot_path)
+            self.assertTrue(Path(snapshot_path).exists())
+
+    @patch('agents.task_planner.agent.build_analyzer_chain')
+    @patch('agents.task_planner.agent.build_classifier_chain')
+    @patch('agents.task_planner.agent.build_optimizer_chain')
+    @patch('agents.task_planner.agent.build_validator_chain')
+    def test_constraints_injected(self, mock_validator, mock_optimizer, mock_classifier, mock_analyzer):
+        config = {"workflow": {"max_iterations": 1, "snapshot_enabled": False}, "roles": {}}
+
+        mock_analyzer.return_value.invoke.return_value = {"goal": "G"}
+        mock_classifier.return_value.invoke.return_value = {
+            "tasks": [{"id": "T1", "name": "Task 1"}],
+            "roles": [{"role_name": "Dev", "initial_jd": "Code it"}],
+        }
+        mock_optimizer.return_value.invoke.return_value = {"role_name": "Dev"}
+        mock_validator.return_value.invoke.return_value = {"passed": True, "score": 0.9}
+
+        run_task_planner({"user_input": "in", "constraints": {"stack": "python"}}, config)
+
+        call_args = mock_analyzer.return_value.invoke.call_args[0][0]
+        self.assertIn("[Constraints]", call_args["user_input"])
 
 if __name__ == '__main__':
     unittest.main()

@@ -170,8 +170,8 @@ def _location_line(
 
 
 def render_food_picks(base_dir: Path) -> None:
-    supabase_config = base_dir / "configs" / "supabase.yaml"
-    amap_config = base_dir / "configs" / "amap.yaml"
+    supabase_config = base_dir / "agents" / "restaurant_recommender" / "config" / "supabase.yaml"
+    amap_config = base_dir / "agents" / "restaurant_recommender" / "config" / "amap.yaml"
     agent_config = base_dir / "agents" / "restaurant_recommender" / "config" / "config.yaml"
 
     saved = st.session_state.get("food_saved", False)

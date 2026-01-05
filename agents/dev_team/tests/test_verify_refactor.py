@@ -24,6 +24,7 @@ def test_architecture_and_safety(tmp_path: Path):
             "engineer": {"prompt_path": _write_prompt(tmp_path, "engineer")},
             "qa": {"prompt_path": _write_prompt(tmp_path, "qa")},
         },
+        "review": {"use_llm": False},
     }
 
     # 1. Default Execution (LocalUnsafeExecutor)
@@ -72,8 +73,8 @@ def test_architecture_and_safety(tmp_path: Path):
 
     # 4. Robust Path Finding
     fake_root = test_output_dir / "fake_project"
-    (fake_root / "configs").mkdir(parents=True, exist_ok=True)
-    (fake_root / "configs" / "llm.yaml").touch()
+    fake_root.mkdir(parents=True, exist_ok=True)
+    (fake_root / "pyproject.toml").touch()
 
     deep_path = fake_root / "a" / "b" / "c"
     deep_path.mkdir(parents=True, exist_ok=True)

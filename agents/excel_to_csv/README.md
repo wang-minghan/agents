@@ -34,7 +34,7 @@ poetry run python agents/excel_to_csv/agent.py --input <input_dir> --output <out
 
 ## LLM 配置
 
-- 默认读取 `configs/llm.yaml`
+- 默认读取 `agents/excel_to_csv/config/llm.yaml`
 - 可通过 `--llm-config` 指定
 
 示例字段（多模型可选）：
@@ -71,7 +71,7 @@ force_chat: false
 
 ## LangSmith 配置
 
-- 默认读取 `configs/langsmith.yaml`
+- 默认读取 `agents/excel_to_csv/config/langsmith.yaml`
 - 可通过 `--langsmith-config` 指定
 
 示例字段：

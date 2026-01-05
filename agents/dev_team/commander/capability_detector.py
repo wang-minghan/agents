@@ -354,6 +354,18 @@ class CapabilityDetector:
                 "scores": {"logic": 0.82, "creativity": 0.80, "code": 0.81, "analysis": 0.83, "communication": 0.85},
                 "optimal_temp": 0.7,
             },
+            "deepseek-chat": {
+                "scores": {"logic": 0.84, "creativity": 0.78, "code": 0.85, "analysis": 0.83, "communication": 0.82},
+                "optimal_temp": 0.7,
+            },
+            "deepseek-reasoner": {
+                "scores": {"logic": 0.90, "creativity": 0.72, "code": 0.88, "analysis": 0.91, "communication": 0.80},
+                "optimal_temp": 0.6,
+            },
+            "grok-4.1-fast": {
+                "scores": {"logic": 0.86, "creativity": 0.85, "code": 0.86, "analysis": 0.84, "communication": 0.86},
+                "optimal_temp": 0.7,
+            },
         }
         
         # 模糊匹配（优先匹配更具体的模型名）

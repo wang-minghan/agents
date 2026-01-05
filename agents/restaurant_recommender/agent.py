@@ -195,7 +195,9 @@ def _load_recent_from_supabase(
     if not user_id:
         return [], []
     supabase = settings.get("supabase") or {}
-    supabase_cfg_path = Path(str(supabase.get("config_path") or "configs/supabase.yaml"))
+    supabase_cfg_path = Path(
+        str(supabase.get("config_path") or "agents/restaurant_recommender/config/supabase.yaml")
+    )
     supabase_cfg = _load_yaml_config(supabase_cfg_path) if supabase_cfg_path.exists() else {}
     url = _resolve_env(str(supabase.get("url") or supabase_cfg.get("url") or ""))
     key = _resolve_env(
@@ -500,7 +502,9 @@ def _prepare_settings(
 
 def _load_amap_config(settings: dict[str, Any]) -> dict[str, Any]:
     amap_cfg = settings.get("amap") or {}
-    amap_path = Path(str(amap_cfg.get("config_path") or "configs/amap.yaml"))
+    amap_path = Path(
+        str(amap_cfg.get("config_path") or "agents/restaurant_recommender/config/amap.yaml")
+    )
     file_cfg = _load_yaml_config(amap_path) if amap_path.exists() else {}
     merged = dict(file_cfg)
     for key, value in amap_cfg.items():

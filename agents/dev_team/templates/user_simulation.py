@@ -11,6 +11,7 @@ def main() -> int:
 
     # TODO: 在这里加入自动化交互与截图逻辑
     # 约定输出：output/evidence/ui/implementation.* 与 design_baseline.*
+    # UI 项目必须补齐用户模拟与截图，确保前端测试覆盖
     # 实际场景应由自动化工具生成截图并写入上述路径
 
     return 0

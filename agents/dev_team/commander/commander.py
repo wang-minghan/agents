@@ -196,7 +196,7 @@ class Commander(BaseOrchestrator):
             metadata={"type": "default"}
         )
     
-    def run_collaboration(self, max_rounds: int = 3):
+    def run_collaboration(self, max_rounds: int = 5):
         """
         增强版协作流程
         
@@ -216,6 +216,18 @@ class Commander(BaseOrchestrator):
                 "outputs": self.shared_memory.get_all_outputs(),
                 "report": report,
             }
+
+        review_report = self._ensure_review_artifacts()
+        self.shared_memory.global_context["review_artifacts"] = review_report
+        if review_report.get("status") not in ("passed", "skipped"):
+            report = self._build_report("review_missing", started_at)
+            report["review"] = review_report
+            self._write_report(report)
+            return {
+                "status": "review_missing",
+                "outputs": self.shared_memory.get_all_outputs(),
+                "report": report,
+            }
         
         if start_round > max_rounds:
             report = self._build_report("max_rounds_reached", started_at)
@@ -223,6 +235,24 @@ class Commander(BaseOrchestrator):
             self._save_resume_state(max_rounds, "max_rounds_reached")
             return {
                 "status": "max_rounds_reached",
+                "outputs": self.shared_memory.get_all_outputs(),
+                "report": report,
+            }
+
+        ui_design_report = self._prepare_ui_design_assets()
+        self.shared_memory.global_context["ui_design_report"] = ui_design_report
+        allow_missing_ui = self._allow_missing_ui_baseline()
+        if (
+            ui_design_report.get("status") == "failed"
+            and self.config.get("ui_design", {}).get("required", True)
+            and not allow_missing_ui
+        ):
+            report = self._build_report("ui_design_failed", started_at)
+            report["ui_design"] = ui_design_report
+            self._write_report(report)
+            self._save_resume_state(0, "ui_design_failed")
+            return {
+                "status": "ui_design_failed",
                 "outputs": self.shared_memory.get_all_outputs(),
                 "report": report,
             }
@@ -244,7 +274,10 @@ class Commander(BaseOrchestrator):
                 "tests": {},
                 "consensus": None,
                 "validation": None,
+                "qa_feedback_recorded": False,
             }
+            self._round_saved_files = set()
+            failure_reasons: List[str] = []
             
             # 1. Agent工作阶段
             print("\n📝 阶段1: Agent工作")
@@ -253,12 +286,20 @@ class Commander(BaseOrchestrator):
                 futures = [executor.submit(self._run_agent, agent) for agent in self.agents]
                 for future in as_completed(futures):
                     round_report["agents"].append(future.result())
+
+            refactor_suggestions = self._collect_refactor_suggestions(self.output_dir)
+            round_report["refactor_suggestions"] = refactor_suggestions
+            self.shared_memory.global_context["refactor_suggestions"] = refactor_suggestions
+            if refactor_suggestions:
+                print("  ⚠️ 发现需要拆解的长函数，已生成建议。")
             
             # 2. 共识机制（可选）
             if self.enable_consensus and len(self.agents) > 1:
                 print("\n🤝 阶段2: 共识达成")
                 consensus_result = self._reach_consensus(round_num)
                 round_report["consensus"] = consensus_result.to_dict()
+                if self._should_block_on_consensus(consensus_result):
+                    failure_reasons.append("consensus_failed")
             
             # 3. 测试执行
             print("\n🧪 阶段3: 自动化测试")
@@ -274,12 +315,44 @@ class Commander(BaseOrchestrator):
             
             round_report["tests"] = {"status": test_status, "summary": summary}
             print(f"  测试状态: {test_status}")
+
+            ui_test_result = "SKIPPED: No UI tests."
+            if self._requires_ui_baseline() and hasattr(self.code_executor, "run_ui_tests"):
+                print("  🧪 [System] 正在执行 UI 测试...")
+                ui_test_result = self.code_executor.run_ui_tests(str(self.output_dir))
+            ui_test_status = self._classify_test_result(ui_test_result)
+            round_report["ui_tests"] = {
+                "status": ui_test_status,
+                "summary": ui_test_result.splitlines()[0] if ui_test_result else "No output",
+            }
+
+            coverage_result = "SKIPPED: No coverage run."
+            if hasattr(self.code_executor, "run_coverage"):
+                print("  🧪 [System] 正在执行覆盖率统计...")
+                coverage_result = self.code_executor.run_coverage(str(self.output_dir))
+            coverage_status = self._classify_test_result(coverage_result)
+            round_report["coverage"] = {
+                "status": coverage_status,
+                "summary": coverage_result.splitlines()[0] if coverage_result else "No output",
+            }
+
+            input_result = "SKIPPED: No input contract tests."
+            if hasattr(self.code_executor, "run_input_contract_tests"):
+                print("  🧪 [System] 正在执行输入契约测试...")
+                input_result = self.code_executor.run_input_contract_tests(str(self.output_dir))
+            input_status = self._classify_test_result(input_result)
+            round_report["input_contract"] = {
+                "status": input_status,
+                "summary": input_result.splitlines()[0] if input_result else "No output",
+            }
             
             # 4. 交叉核查（可选）
             if self.enable_cross_validation and len(self.agents) > 1:
                 print("\n🔍 阶段4: 交叉核查")
                 validation_report = self._cross_validate()
                 round_report["validation"] = validation_report.to_dict()
+                if self._should_block_on_validation(validation_report):
+                    failure_reasons.append("validation_failed")
             
             # 5. QA审查
             if getattr(self, "qa_agents", None):
@@ -296,20 +369,90 @@ class Commander(BaseOrchestrator):
                         )
                         for agent in self.qa_agents
                     ]
-                    for future in as_completed(futures):
-                        qa_reports.append(future.result())
+                for future in as_completed(futures):
+                    qa_reports.append(future.result())
                 round_report["qa_feedback"] = qa_reports
+                round_report["qa_feedback_recorded"] = True
+                qa_gate_cfg = self.config.get("quality_gates", {}).get("qa", {})
+                if qa_gate_cfg.get("enabled", True) and self._qa_feedback_failed(qa_reports):
+                    failure_reasons.append("qa_failed")
             
             # 6. 判断是否结束
             if test_status == "passed":
                 print("\n✨ 所有测试通过！")
-                run_status = "passed"
-                approved = self._run_approval_gate(round_num, test_status, round_report)
+                if input_status in ("failed", "error"):
+                    print("  ❌ 输入契约测试未通过，进入修复回合。")
+                    failure_reasons.append("input_contract_failed")
+                if self._requires_ui_baseline() and self._should_require_ui_tests():
+                    if ui_test_status in ("failed", "error", "skipped", "unknown"):
+                        print("  ❌ UI 测试未通过或缺失，进入修复回合。")
+                        failure_reasons.append("ui_tests_failed")
+                if self._should_require_coverage():
+                    if coverage_status in ("failed", "error", "skipped", "unknown"):
+                        print("  ❌ 覆盖率统计未通过或缺失，进入修复回合。")
+                        failure_reasons.append("coverage_failed")
+                if self._requires_ui_baseline():
+                    ui_check = self._check_ui_evidence()
+                    round_report["ui_evidence"] = ui_check
+                    if ui_check["status"] != "passed":
+                        print("  ❌ UI 证据不完整，进入修复回合。")
+                        failure_reasons.append("ui_evidence_missing")
+                sim_result = "SKIPPED: No user simulation."
+                if hasattr(self.code_executor, "run_user_simulation"):
+                    print("  🧭 [System] 正在执行用户模拟测试...")
+                    sim_result = self.code_executor.run_user_simulation(str(self.output_dir))
+                sim_status = self._classify_test_result(sim_result)
+                round_report["user_simulation"] = {
+                    "status": sim_status,
+                    "summary": sim_result.splitlines()[0] if sim_result else "No output",
+                }
+                if self._requires_ui_baseline() and self._should_require_ui_simulation():
+                    if sim_status not in ("passed",):
+                        print("  ❌ 用户模拟测试缺失或失败，进入修复回合。")
+                        failure_reasons.append("user_simulation_failed")
+                elif sim_status not in ("passed", "skipped", "unknown"):
+                    print("  ❌ 用户模拟测试未通过，进入修复回合。")
+                    failure_reasons.append("user_simulation_failed")
+                acceptance_criteria = self._get_acceptance_criteria(self._get_requirements_payload())
+                acceptance_report = self._verify_acceptance_checklist(acceptance_criteria)
+                round_report["acceptance"] = acceptance_report
+                if acceptance_report.get("status") == "failed":
+                    print("  ❌ 验收清单未完成，进入修复回合。")
+                    failure_reasons.append("acceptance_failed")
+                if not failure_reasons:
+                    self._write_evidence_manifest(round_report)
+                    self._archive_evidence()
+                    approved = self._run_approval_gate(round_num, test_status, round_report)
+                    if approved:
+                        run_status = "passed"
+                        self.run_reports.append(round_report)
+                        break
+                    print("  ⚠️ 审批未通过，进入修复回合。")
+                    failure_reasons.append("approval_failed")
+
+            else:
+                if test_status in ("failed", "error"):
+                    failure_reasons.append("tests_failed")
+                elif test_status in ("skipped", "unknown") and self._should_require_tests():
+                    failure_reasons.append("tests_failed")
+                if self._requires_ui_baseline() and self._should_require_ui_tests():
+                    if ui_test_status in ("failed", "error", "skipped", "unknown"):
+                        failure_reasons.append("ui_tests_failed")
+                if self._should_require_coverage():
+                    if coverage_status in ("failed", "error", "skipped", "unknown"):
+                        failure_reasons.append("coverage_failed")
+
+            if failure_reasons:
+                round_report["failure_reasons"] = failure_reasons
+                self._write_bug_card(failure_reasons[0], round_report)
+                self._write_evidence_manifest(round_report)
+                self._archive_evidence()
                 self.run_reports.append(round_report)
-                if approved:
-                    run_status = "passed"
-                else:
-                    run_status = "approval_failed"
+                self._save_resume_state(round_num, "in_progress")
+                self._sync_iteration_artifacts()
+                run_status = failure_reasons[0]
+                if round_num < max_rounds:
+                    continue
                 break
             
             self.run_reports.append(round_report)
@@ -334,33 +477,7 @@ class Commander(BaseOrchestrator):
     
     def _run_agent(self, agent: Agent) -> Dict[str, Any]:
         """运行单个Agent"""
-        agent_name = agent.role_name if hasattr(agent, 'role_name') else str(agent)
-        agent_report = {"role_name": agent_name}
-        
-        try:
-            agent.run()
-            
-            # 保存文件
-            from agents.common import save_files_from_content
-            output_content = self.shared_memory.get_all_outputs()[agent_name][-1]
-            saved_files = save_files_from_content(output_content, self.output_dir)
-            
-            if saved_files:
-                self.shared_memory.add_saved_files(saved_files)
-            
-            agent_report.update({
-                "status": "completed",
-                "output_chars": len(output_content) if isinstance(output_content, str) else 0,
-                "saved_files": saved_files,
-            })
-            
-            print(f"  ✅ [{agent_name}] 完成")
-            
-        except Exception as e:
-            agent_report.update({"status": "error", "error": str(e)})
-            print(f"  ❌ [{agent_name}] 错误: {str(e)}")
-        
-        return agent_report
+        return self._run_agent_once(agent)
     
     def _reach_consensus(self, round_num: int) -> ConsensusResult:
         """达成共识"""

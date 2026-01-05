@@ -16,6 +16,7 @@ pyyaml = "^6.0.3"
 streamlit = "^1.39.0"
 langchain = "^1.2.0"
 pillow = "^11.3.0"
+google-genai = "^1.56.0"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]
@@ -23,7 +24,8 @@ build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [
-    "pytest (>=9.0.2,<10.0.0)"
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-cov (>=7.0.0,<8.0.0)"
 ]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,34 @@
+{
+  "id": "BUG-2026-01-05T03-34-07Z",
+  "type": "一致性",
+  "severity": "S3",
+  "scope": "页面/组件",
+  "repro_steps": [
+    "查看证据与日志",
+    "触发原因: consensus_failed"
+  ],
+  "expected": "所有门禁通过并生成完整证据链",
+  "actual": "门禁失败: consensus_failed",
+  "evidence": [
+    "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/manifest.json"
+  ],
+  "owner": "UI_Engineer",
+  "status": "open",
+  "metadata": {
+    "round": 1,
+    "tests": {
+      "status": "skipped",
+      "summary": "SKIPPED: No tests found."
+    },
+    "input_contract": {
+      "status": "skipped",
+      "summary": "SKIPPED: No input contract tests found."
+    },
+    "qa_feedback": [
+      {
+        "role_name": "Senior QA Engineer (Python性能与一致性测试专家)",
+        "feedback": "好的，我已切换至 Senior QA Engineer 角色，开始对提供的工程输出进行验证。\n\n根据输入信息，我将依据我的职责和给定的检查重点，对当前任务状态进行分析。\n\n---\n\n### **验证分析报告**\n\n**1. 任务类型识别**\n- **是否为“更新优化任务”**: **是**。根据上下文（`验收清单`）和已生成的文件（如 `adr.md`），这是一个对现有 `excel_to_csv` 模块进行**重构**的项目。它涉及架构解耦、性能优化、UI 集成等，属于典型的 `existing_project` 的 `iteration_target`，并以 `update_mode` 进行。\n\n**2. 代码修改方式**\n- **是否基于现有代码修改**: **无法验证**。工程师输出仅提供了 `agent.py`、`__init__.py` 和 `adr.md` 的路径，但未提供这些文件的具体内容摘要。因此，我无法判断 `agent.py` 是基于旧版核心逻辑修改而来，还是完全重写的。这是一个**关键信息缺失**。\n\n**3. 占位代码与伪代码**\n- **是否出现占位代码**: **无法验证**。原因同上，未提供代码内容，无法检查是否存在 `...`、`pass` 等占位符。\n\n**4. 测试/验证与交付说明**\n- **是否遗漏必要的测试/验证**: **是，存在重大遗漏**。\n    - **问题**: 工程师输出中**完全没有**提及任何测试代码（如单元测试、集成测试、性能测试脚本）、测试结果或测试计划。作为一次以“功能一致性”和“性能达标”为核心验收标准的重构，缺少测试交付物是致命的。\n    - **修复建议**: 必须补充：\n        1.  **功能一致性测试套件**: 用于验证重构前后 CSV 和审计报告输出完全一致。\n        2.  **性能基准测试脚本**: 使用指定的测试数据集（10 sheets, 5万行/sheet, 20列），测量 `skip_llm=false/true` 两种模式下的端到端耗时。\n        3.  **并发压力测试脚本**: 验证文件级和表级并发处理的安全上限和稳定性。\n        4.  **CLI 兼容性测试用例**: 确保所有现有参数行为不变。\n        5.  **UI \n...[Truncated]..."
+      }
+    ]
+  }
+}

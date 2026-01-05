@@ -1059,33 +1059,22 @@ def _apply_feedback(
     }
 
 
-def _process_sheet(
+def _process_dataframe(
+    df: pd.DataFrame,
     source_path: Path,
-    sheet_name: str | None,
+    sheet_label: str,
     output_dir: Path,
     llm_config: dict[str, object],
     max_rounds: int,
-    skip_llm: bool = False,
+    skip_llm: bool,
+    is_csv: bool,
 ) -> None:
-    sheet_label = sheet_name or source_path.stem
     trace_token = _start_task_trace(source_path, str(sheet_label), output_dir)
     print(
         f"[excel_to_csv] start file={source_path.name} sheet={sheet_label}",
         flush=True,
     )
     try:
-        is_csv = source_path.suffix.lower() == ".csv"
-        if is_csv:
-            df = _read_csv_preserve_columns(source_path)
-        else:
-            sheet_key = str(sheet_name) if sheet_name is not None else 0
-            df = pd.read_excel(
-                source_path,
-                sheet_name=sheet_key,
-                dtype=object,
-                header=None,
-                keep_default_na=False,
-            )
         allow_auto_header = (not is_csv) and _should_auto_header(df)
         version = _extract_version(source_path.stem)
         inferred_topic, inferred_table = _infer_topic_table_from_name(
@@ -1171,7 +1160,6 @@ def _process_sheet(
                     break
                 seen_states.add(state_sig)
 
-
         out_name = f"{topic}_{table_name}_{version}.csv"
         out_path = output_dir / out_name
         df.to_csv(
@@ -1203,18 +1191,52 @@ def _process_sheet(
         raise
 
 
+def _process_sheet(
+    source_path: Path,
+    sheet_name: str | None,
+    output_dir: Path,
+    llm_config: dict[str, object],
+    max_rounds: int,
+    skip_llm: bool = False,
+) -> None:
+    sheet_label = sheet_name or source_path.stem
+    is_csv = source_path.suffix.lower() == ".csv"
+    if is_csv:
+        df = _read_csv_preserve_columns(source_path)
+    else:
+        sheet_key = str(sheet_name) if sheet_name is not None else 0
+        df = pd.read_excel(
+            source_path,
+            sheet_name=sheet_key,
+            dtype=object,
+            header=None,
+            keep_default_na=False,
+        )
+    _process_dataframe(
+        df,
+        source_path,
+        str(sheet_label),
+        output_dir,
+        llm_config,
+        max_rounds,
+        skip_llm,
+        is_csv,
+    )
+
+
 def convert_excel_dir(
     input_dir: Path,
     output_dir: Path,
     llm_config: dict[str, object],
     max_rounds: int = 5,
     max_workers: int | None = None,
+    max_file_workers: int | None = None,
     skip_llm: bool = False,
 ) -> None:
     input_dir = input_dir.resolve()
     output_dir = output_dir.resolve()
 
-    for source_path in _iter_input_files(input_dir):
+    def _process_file(source_path: Path) -> None:
         rel_path = source_path.relative_to(input_dir)
         out_parent = output_dir / rel_path.parent
         out_parent.mkdir(parents=True, exist_ok=True)
@@ -1228,7 +1250,7 @@ def convert_excel_dir(
                 max_rounds,
                 skip_llm,
             )
-            continue
+            return
 
         excel = pd.ExcelFile(source_path)
         configured_workers = _safe_int(
@@ -1239,6 +1261,26 @@ def convert_excel_dir(
             if max_workers is not None
             else configured_workers
         )
+        if worker_limit <= 1:
+            for sheet_name in excel.sheet_names:
+                df = excel.parse(
+                    sheet_name=sheet_name,
+                    dtype=object,
+                    header=None,
+                    keep_default_na=False,
+                )
+                _process_dataframe(
+                    df,
+                    source_path,
+                    str(sheet_name),
+                    out_parent,
+                    llm_config,
+                    max_rounds,
+                    skip_llm,
+                    is_csv=False,
+                )
+            return
+
         with ThreadPoolExecutor(max_workers=worker_limit) as executor:
             futures = []
             for sheet_name in excel.sheet_names:
@@ -1256,12 +1298,29 @@ def convert_excel_dir(
             for future in as_completed(futures):
                 future.result()
 
+    files = list(_iter_input_files(input_dir))
+    if not files:
+        return
+    if max_file_workers is None:
+        max_file_workers = _safe_int(llm_config.get("max_file_workers", 1), 1)
+    if max_file_workers <= 1:
+        for source_path in files:
+            _process_file(source_path)
+    else:
+        with ThreadPoolExecutor(max_workers=max_file_workers) as executor:
+            futures = [executor.submit(_process_file, path) for path in files]
+            for future in as_completed(futures):
+                future.result()
+
 
 def _run(payload: dict[str, object]) -> dict[str, str]:
     input_dir = Path(payload["input_dir"])
     output_dir = Path(payload["output_dir"])
-    config_path = Path(payload.get("llm_config", "configs/llm.yaml"))
-    langsmith_path = Path(payload.get("langsmith_config", "configs/langsmith.yaml"))
+    base_dir = Path(__file__).parent.resolve()
+    default_llm = str(base_dir / "config" / "llm.yaml")
+    default_langsmith = str(base_dir / "config" / "langsmith.yaml")
+    config_path = Path(payload.get("llm_config", default_llm))
+    langsmith_path = Path(payload.get("langsmith_config", default_langsmith))
     max_rounds = _safe_int(payload.get("max_rounds"), 5)
     max_workers_raw = payload.get("max_workers")
     max_workers = (
@@ -1308,12 +1367,12 @@ def _run_cli() -> None:
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument(
         "--llm-config",
-        default="configs/llm.yaml",
+        default=str(Path(__file__).parent.resolve() / "config" / "llm.yaml"),
         help="Path to LLM config YAML",
     )
     parser.add_argument(
         "--langsmith-config",
-        default="configs/langsmith.yaml",
+        default=str(Path(__file__).parent.resolve() / "config" / "langsmith.yaml"),
         help="Path to LangSmith config YAML",
     )
     parser.add_argument(

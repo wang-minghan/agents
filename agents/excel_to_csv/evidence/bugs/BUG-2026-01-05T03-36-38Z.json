@@ -1,0 +1,34 @@
+{
+  "id": "BUG-2026-01-05T03-36-38Z",
+  "type": "一致性",
+  "severity": "S3",
+  "scope": "页面/组件",
+  "repro_steps": [
+    "查看证据与日志",
+    "触发原因: consensus_failed"
+  ],
+  "expected": "所有门禁通过并生成完整证据链",
+  "actual": "门禁失败: consensus_failed",
+  "evidence": [
+    "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/manifest.json"
+  ],
+  "owner": "UI_Engineer",
+  "status": "open",
+  "metadata": {
+    "round": 2,
+    "tests": {
+      "status": "skipped",
+      "summary": "SKIPPED: No tests found."
+    },
+    "input_contract": {
+      "status": "skipped",
+      "summary": "SKIPPED: No input contract tests found."
+    },
+    "qa_feedback": [
+      {
+        "role_name": "Senior QA Engineer (Python性能与一致性测试专家)",
+        "feedback": "## QA验证报告\n\n### 结论：不通过\n\n### 问题清单与修复建议\n\n1. **任务类型识别问题**\n   - **问题**：无法确定当前是否为\"更新优化任务\"。从提供的上下文看，这是一个完整的重构项目，涉及架构解耦、UI重写、性能优化等多方面，但缺少明确的`requirements`字段来确认任务类型（existing_project / iteration_target / update_mode）。\n   - **建议**：请提供完整的`requirements` JSON字符串，明确说明这是新项目开发还是现有项目更新优化。\n\n2. **现有代码修改验证不足**\n   - **问题**：无法验证是否基于现有代码修改。虽然项目描述为\"重构\"，但缺少原始代码基准对比。需要确认重构是否保留了核心算法和接口，而不是完全重写。\n   - **建议**：提供重构前后的代码对比分析，特别是核心业务逻辑的变更记录。\n\n3. **测试覆盖不完整**\n   - **问题**：缺少`test_results`字段，无法验证以下关键测试是否执行：\n     - 功能一致性测试（重构前后输出完全一致）\n     - 性能测试（skip_llm=false < 90s, skip_llm=true < 30s）\n     - 并发压力测试\n     - CLI兼容性测试\n     - UI功能完整性测试\n   - **建议**：提供完整的测试结果报告，包括：\n     - 集成测试通过率\n     - 性能测试数据（具体耗时）\n     - 并发测试结果\n     - UI测试用例执行情况\n\n4. **缺陷管理问题**\n   - **问题**：`bug_cards`中有一个状态为\"consensus_failed\"的缺陷（BUG-2026-01-05T03-34-07Z），但未提供详细信息。无法确认该缺陷是否已修复并验证。\n   - **建议**：提供该缺陷的详细描述、修复状态和验证结果。如果已修复，需要更新状态为fixed/verified。\n\n5. **交付物完整性检查**\n   - **问题**：根据验收清单，缺少以下关键交付物：\n     - 性能测试报告\n     - 功能一致性验证报告\n     - 测试计划与测试用例\n     - 证据链文档\n     - 项目总结报\n...[Truncated]..."
+      }
+    ]
+  }
+}

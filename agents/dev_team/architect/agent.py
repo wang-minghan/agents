@@ -29,7 +29,13 @@ def suggest_default_assumptions(
     api_key = role_cfg.get("api_key") or llm_cfg.get("api_key")
     api_base = role_cfg.get("api_base") or llm_cfg.get("api_base")
     if not api_key:
-        return "默认假设:\n- 无法获取LLM配置，请补充关键假设。"
+        return (
+            "默认假设:\n"
+            "- 默认提供可用的前端界面与基础交互流程\n"
+            "- 核心流程需具备自动化测试与覆盖率报告\n"
+            "- 默认目标为可商用交付，需完整文档与验收清单\n"
+            "- 默认性能满足中等并发与常规稳定性要求\n"
+        )
 
     llm = ChatOpenAI(
         model=model,
@@ -42,7 +48,7 @@ def suggest_default_assumptions(
     questions = planner_result.get("validation_result", {}).get("user_feedback_needed", [])
     prompt = (
         "你是资深架构师。给出最小可行的默认假设，用于在缺少用户补充时继续推进规划。\n"
-        "要求：覆盖性能目标、UI范围、目标用户、角色补齐/交付边界，使用中文条目列表。\n"
+        "要求：覆盖性能目标、UI范围、目标用户、角色补齐/交付边界、测试与覆盖率要求，使用中文条目列表。\n"
         "只输出条目列表，不要额外解释。\n\n"
         f"用户需求: {user_input}\n"
         f"待澄清问题: {questions}\n"

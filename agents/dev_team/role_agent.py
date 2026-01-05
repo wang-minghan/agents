@@ -71,7 +71,8 @@ class RoleAgent:
             "role_jd": json.dumps(self.role_jd, ensure_ascii=False, indent=2),
             "requirements": self.memory.global_context.get("requirements", ""),
             "engineer_output": json.dumps(engineer_output, ensure_ascii=False),
-            "test_results": self.memory.global_context.get("latest_test_results", "暂无测试运行结果")
+            "test_results": self.memory.global_context.get("latest_test_results", "暂无测试运行结果"),
+            "bug_cards": json.dumps(self.memory.global_context.get("bug_cards", []), ensure_ascii=False),
         }
         
         system_instruction = self.prompt_template.format(**prompt_kwargs)

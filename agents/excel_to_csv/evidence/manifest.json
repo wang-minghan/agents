@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-01-05T03:36:38Z",
+  "ui_evidence": null,
+  "user_simulation": null,
+  "input_contract": {
+    "status": "skipped",
+    "summary": "SKIPPED: No input contract tests found."
+  },
+  "acceptance": null,
+  "tests": {
+    "status": "skipped",
+    "summary": "SKIPPED: No tests found."
+  },
+  "bug_cards": [
+    {
+      "path": "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/bugs/BUG-2026-01-05T03-34-07Z.json",
+      "reason": "consensus_failed",
+      "summary": "门禁失败: consensus_failed",
+      "created_at": "2026-01-05T03:34:07Z"
+    },
+    {
+      "path": "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/bugs/BUG-2026-01-05T03-36-38Z.json",
+      "reason": "consensus_failed",
+      "summary": "门禁失败: consensus_failed",
+      "created_at": "2026-01-05T03:36:38Z"
+    }
+  ],
+  "files": [
+    "manifest.json",
+    "collaboration_state.json",
+    "evidence_pack_2026-01-05T03-34-07Z.zip",
+    "docs/design_review_checklist.md",
+    "docs/current_state_summary.md",
+    "docs/acceptance_checklist.md",
+    "docs/brainstorm_record.md",
+    "docs/adr.md.bak",
+    "docs/adr.md",
+    "bugs/BUG-2026-01-05T03-36-38Z.json",
+    "bugs/BUG-2026-01-05T03-34-07Z.json",
+    "ast/ast_baseline.md"
+  ]
+}

@@ -80,7 +80,10 @@ def render_excel_to_csv(base_dir: Path) -> None:
             st.markdown("</div>", unsafe_allow_html=True)
         with col_right:
             st.markdown("<div class='excel-card'>", unsafe_allow_html=True)
-            llm_config = st.text_input("LLM 配置路径", value=str(base_dir / "configs" / "llm.yaml"))
+            llm_config = st.text_input(
+                "LLM 配置路径",
+                value=str(base_dir / "agents" / "excel_to_csv" / "config" / "llm.yaml"),
+            )
             st.markdown("建议：将输入按业务主题分目录，便于审计归档。")
             st.markdown("</div>", unsafe_allow_html=True)
 

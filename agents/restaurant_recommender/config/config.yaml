@@ -26,14 +26,14 @@ recent_decay:
   exclude_days: 2
   half_life_days: 5
 amap:
-  config_path: "configs/amap.yaml"
+  config_path: "agents/restaurant_recommender/config/amap.yaml"
   api_key: ""
   mode: driving # driving | walking | transit
   strategy: 10
   place_keywords: "餐厅"
   place_types: "050000"
 supabase:
-  config_path: "configs/supabase.yaml"
+  config_path: "agents/restaurant_recommender/config/supabase.yaml"
   url: ""
   service_role_key: ""
   anon_key: ""

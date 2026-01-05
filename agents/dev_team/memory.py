@@ -108,6 +108,10 @@ class SharedMemoryStore:
         include_project_context_for_qa = memory_cfg.get("include_project_context_for_qa")
 
         project_context = self.global_context.get("project_context")
+        acceptance_criteria = self.global_context.get("acceptance_criteria")
+        bug_cards = self.global_context.get("bug_cards")
+        ui_design = self.global_context.get("ui_design")
+        ui_design_summary = self.global_context.get("ui_design_summary")
         
         # 1. 包含其他角色的最新输出 (使用 AST 智能摘要)
         with self._lock:
@@ -130,6 +134,26 @@ class SharedMemoryStore:
 
         if project_context and include_project_context:
             context_parts.append(f"### 项目现有代码基线:\n{project_context}")
+
+        if acceptance_criteria:
+            criteria_text = "\n".join([f"- {item}" for item in acceptance_criteria])
+            context_parts.append(f"### 验收清单:\n{criteria_text}")
+
+        if bug_cards:
+            bug_text = json.dumps(bug_cards, ensure_ascii=False, indent=2)
+            if len(bug_text) > 3000:
+                bug_text = bug_text[:3000] + "\n...[Bug Cards Truncated]..."
+            context_parts.append(f"### Bug Card:\n{bug_text}")
+
+        if ui_design:
+            ui_text = json.dumps(ui_design, ensure_ascii=False, indent=2)
+            context_parts.append(f"### UI 设计基线:\n{ui_text}")
+
+        if ui_design_summary:
+            summary_text = str(ui_design_summary)
+            if len(summary_text) > 2000:
+                summary_text = summary_text[:2000] + "\n...[Summary Truncated]..."
+            context_parts.append(f"### UI 设计摘要:\n{summary_text}")
 
         if not is_qa or include_role_outputs_for_qa:
             for role, latest_output in outputs_snapshot.items():
@@ -154,6 +178,11 @@ class SharedMemoryStore:
         if saved_files:
             files_list = "\n".join([f"- {path}" for path in saved_files])
             context_parts.append(f"### 当前已生成的文件列表:\n{files_list}")
+
+        review_docs = self.global_context.get("review_docs")
+        if review_docs:
+            review_text = json.dumps(review_docs, ensure_ascii=False, indent=2)
+            context_parts.append(f"### 审查产出路径:\n{review_text}")
 
         return "\n\n".join(context_parts) if context_parts else "暂无其他角色的上下文信息。"
 

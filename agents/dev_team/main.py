@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 from agents.dev_team.architect.agent import (
@@ -14,22 +15,35 @@ from agents.dev_team.commander import Commander
 STATE_PATH = Path(__file__).parent / "output" / "planner_state.json"
 
 
-def _load_planner_state(user_input: str) -> dict | None:
+def _constraints_signature(constraints: dict | None) -> str:
+    if not constraints:
+        return ""
+    try:
+        payload = json.dumps(constraints, sort_keys=True, ensure_ascii=False)
+    except TypeError:
+        payload = str(constraints)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_planner_state(user_input: str, constraints: dict | None) -> dict | None:
     if not STATE_PATH.exists():
         return None
     try:
         data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if data.get("constraints_sig") != _constraints_signature(constraints):
+        return None
     if data.get("user_input") == user_input and isinstance(data.get("planner_state"), dict):
         return data["planner_state"]
     return None
 
 
-def _save_planner_state(user_input: str, planner_state: dict) -> None:
+def _save_planner_state(user_input: str, planner_state: dict, constraints: dict | None) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "user_input": user_input,
+        "constraints_sig": _constraints_signature(constraints),
         "planner_state": planner_state,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -66,7 +80,7 @@ def main():
                 constraints["implementation_snapshot"] = str(implementation[0])
     if constraints:
         input_payload["constraints"] = constraints
-    cached_state = _load_planner_state(user_input)
+    cached_state = _load_planner_state(user_input, constraints)
     if cached_state:
         print("⚠️ 检测到上次规划状态，尝试恢复。")
         input_payload["planner_state"] = cached_state
@@ -74,7 +88,7 @@ def main():
     if planner_result.get("status") == "needs_feedback":
         print("⚠️ 未提供补充信息，使用AI默认假设继续规划。")
         if planner_result.get("planner_state"):
-            _save_planner_state(user_input, planner_result["planner_state"])
+            _save_planner_state(user_input, planner_result["planner_state"], constraints)
         ai_feedback = suggest_default_assumptions(
             architect_config,
             planner_result,
@@ -107,7 +121,8 @@ def main():
     
     commander = Commander(dev_team_config)
     commander.initialize_team(planner_result)
-    final_results = commander.run_collaboration(max_rounds=2)
+    max_rounds = int(os.environ.get("DEV_TEAM_MAX_ROUNDS", dev_team_config.get("max_rounds", 5)))
+    final_results = commander.run_collaboration(max_rounds=max_rounds)
 
     # 3. 输出最终结果
     print("\n" + "="*50)

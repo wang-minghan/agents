@@ -1,5 +1,0 @@
-url: "https://nayzsdhljfvphsnyzonm.supabase.co"
-# service_role_key: 服务器端使用，权限最高，请勿暴露给客户端
-service_role_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5heXpzZGhsamZ2cGhzbnl6b25tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAxOTAzOTUsImV4cCI6MjA3NTc2NjM5NX0.FHeQuN5GYwaZlZzM1xzl0SNGEurHyOnK7Eidl6dj_F0"
-# anon_key / publishable_key: 客户端可用，但权限受限
-anon_key: "sb_publishable_sKV__Wbay-PwOaOqobWz6w_45_SDjh6"

@@ -17,6 +17,7 @@ result = commander.run_collaboration(max_rounds=5)
 ## 🔧 配置说明
 
 `agents/dev_team/config/config.yaml` 仅保留角色提示词与报告开关，其他为可选配置：
+LLM 配置建议从 `agents/dev_team/config/llm.example.yaml` 复制到本机 `llm.yaml`（不入库）。
 
 ```yaml
 roles:
@@ -29,6 +30,9 @@ report:
   enabled: true
 
 clean_output_on_start: true  # 启动时安全清理输出目录（检测到可恢复状态则跳过）
+
+execution:
+  allow_unsafe: true  # 生产环境可设置为 false 以禁用本地执行
 
 review:
   use_llm: false  # 可选：禁用 LLM 生成审查文档（仅用模板兜底）

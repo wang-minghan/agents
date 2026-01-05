@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.dev_team.role_agent import RoleAgent
 from agents.dev_team.memory import SharedMemoryStore
 from agents.dev_team.interfaces import CodeExecutor, Agent
-from agents.dev_team.execution import LocalUnsafeExecutor
+from agents.dev_team.execution import LocalUnsafeExecutor, DisabledExecutor
 from agents.common import find_project_root, parse_code_blocks, save_files_from_content
 from agents.dev_team.code_summarizer import CodeSummarizer
 
@@ -61,15 +61,20 @@ class BaseOrchestrator:
         if code_executor:
             self.code_executor = code_executor
         else:
-            testing_cfg = config.get("testing", {})
-            self.code_executor = LocalUnsafeExecutor(
-                test_cmd=testing_cfg.get("command"),
-                timeout=testing_cfg.get("timeout", 60),
-                per_file=testing_cfg.get("per_file", True),
-                ui_test_patterns=testing_cfg.get("ui_test_patterns"),
-                coverage_cmd=testing_cfg.get("coverage_command"),
-                coverage_timeout=testing_cfg.get("coverage_timeout", 120),
-            )
+            exec_cfg = config.get("execution", {})
+            allow_unsafe = exec_cfg.get("allow_unsafe", True)
+            if not allow_unsafe:
+                self.code_executor = DisabledExecutor(reason="Unsafe execution disabled.")
+            else:
+                testing_cfg = config.get("testing", {})
+                self.code_executor = LocalUnsafeExecutor(
+                    test_cmd=testing_cfg.get("command"),
+                    timeout=testing_cfg.get("timeout", 60),
+                    per_file=testing_cfg.get("per_file", True),
+                    ui_test_patterns=testing_cfg.get("ui_test_patterns"),
+                    coverage_cmd=testing_cfg.get("coverage_command"),
+                    coverage_timeout=testing_cfg.get("coverage_timeout", 120),
+                )
 
         self.iteration_target: Optional[Path] = None
         target = self.config.get("iteration_target")
@@ -335,7 +340,22 @@ class BaseOrchestrator:
             lines = [line.strip().lower() for line in text.splitlines() if line.strip().lower().startswith("- [x]")]
         else:
             lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
-        missing = [item for item in criteria if item.lower() not in " ".join(lines)]
+        baseline_missing_allowed = False
+        if self._allow_missing_ui_baseline():
+            evidence_dir = self.output_dir / "evidence" / "ui"
+            has_baseline = any(
+                evidence_dir.glob("design_baseline.*")
+            ) or any(evidence_dir.glob("design_baseline_v*.*"))
+            baseline_missing_allowed = not has_baseline
+        missing = []
+        for item in criteria:
+            if item.lower() in " ".join(lines):
+                continue
+            if baseline_missing_allowed:
+                lowered = item.lower()
+                if "基线" in lowered or "design baseline" in lowered:
+                    continue
+            missing.append(item)
         status = "passed" if not missing else "failed"
         return {"status": status, "missing": missing, "path": str(checklist_path)}
 
@@ -1044,8 +1064,13 @@ class BaseOrchestrator:
         if self._should_require_coverage() and "覆盖率达标" not in acceptance:
             acceptance.append("覆盖率达标")
         if self._requires_ui_baseline_from_requirements(requirements):
-            if "UI 设计基线与实现截图齐全" not in acceptance:
-                acceptance.append("UI 设计基线与实现截图齐全")
+            if self._allow_missing_ui_baseline():
+                optional_text = "UI 设计基线（如提供）与实现截图齐全"
+                if optional_text not in acceptance:
+                    acceptance.append(optional_text)
+            else:
+                if "UI 设计基线与实现截图齐全" not in acceptance:
+                    acceptance.append("UI 设计基线与实现截图齐全")
         requirements["acceptance_criteria"] = acceptance
         return requirements
 
@@ -1643,6 +1668,31 @@ class BaseOrchestrator:
         }
         return approved
 
+    @staticmethod
+    def _serialize_phase_result(result: Any) -> Optional[Dict[str, Any]]:
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "to_dict"):
+            try:
+                return result.to_dict()
+            except Exception:
+                return {"raw": str(result)}
+        return {"raw": str(result)}
+
+    def _enable_consensus(self) -> bool:
+        return False
+
+    def _enable_cross_validation(self) -> bool:
+        return False
+
+    def _run_consensus_phase(self, round_num: int) -> Any:
+        return None
+
+    def _run_cross_validation_phase(self) -> Any:
+        return None
+
     def _write_report(self, report: Dict[str, Any]) -> None:
         if not self.report_enabled:
             return
@@ -1769,6 +1819,8 @@ class BaseOrchestrator:
 
         print(f"\n🚀 启动 TDD 协作流程 (最大轮次: {max_rounds})...")
         run_status = "max_rounds_reached"
+        testing_cfg = self.config.get("testing", {})
+        testing_enabled = testing_cfg.get("enabled", True)
         for round_num in range(start_round, max_rounds + 1):
             print(f"\n🔄 --- 第 {round_num} 轮迭代 ---")
             round_report = {
@@ -1776,8 +1828,11 @@ class BaseOrchestrator:
                 "agents": [],
                 "tests": {},
                 "qa_feedback_recorded": False,
+                "consensus": None,
+                "validation": None,
             }
             self._round_saved_files = set()
+            failure_reasons: List[str] = []
 
             max_workers = min(4, max(1, len(self.agents)))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1791,9 +1846,19 @@ class BaseOrchestrator:
             if refactor_suggestions:
                 print("    ⚠️ 发现需要拆解的长函数，已生成建议。")
 
-            print(f"    🧪 [System] 正在执行自动化测试/语法检查...")
+            if self._enable_consensus() and len(self.agents) > 1:
+                print("\n🤝 阶段2: 共识达成")
+                consensus_result = self._run_consensus_phase(round_num)
+                round_report["consensus"] = self._serialize_phase_result(consensus_result)
+                if consensus_result is not None and self._should_block_on_consensus(consensus_result):
+                    failure_reasons.append("consensus_failed")
 
-            test_results = self.code_executor.run_tests(str(self.output_dir))
+            print("\n🧪 阶段3: 自动化测试")
+            print("    🧪 [System] 正在执行自动化测试/语法检查...")
+            if testing_enabled:
+                test_results = self.code_executor.run_tests(str(self.output_dir))
+            else:
+                test_results = "SKIPPED: Testing disabled by config."
 
             self.shared_memory.global_context["latest_test_results"] = test_results
             summary_lines = test_results.splitlines()
@@ -1802,6 +1867,13 @@ class BaseOrchestrator:
             test_status = self._classify_test_result(test_results)
             self.shared_memory.global_context["latest_test_status"] = test_status
             round_report["tests"] = {"status": test_status, "summary": summary}
+
+            if self._enable_cross_validation() and len(self.agents) > 1:
+                print("\n🔍 阶段4: 交叉核查")
+                validation_report = self._run_cross_validation_phase()
+                round_report["validation"] = self._serialize_phase_result(validation_report)
+                if validation_report is not None and self._should_block_on_validation(validation_report):
+                    failure_reasons.append("validation_failed")
 
             ui_test_result = "SKIPPED: No UI tests."
             if self._requires_ui_baseline() and hasattr(self.code_executor, "run_ui_tests"):
@@ -1835,7 +1907,6 @@ class BaseOrchestrator:
 
             if test_status == "passed":
                 print("    ✨ 自动化测试全部通过！")
-                failure_reasons: List[str] = []
                 if input_status in ("failed", "error"):
                     print("    ❌ 输入契约测试未通过，进入修复回合。")
                     failure_reasons.append("input_contract_failed")
@@ -1930,7 +2001,6 @@ class BaseOrchestrator:
                 round_report["qa_feedback"] = qa_reports
                 print(f"    📝 QA 反馈已记录")
 
-            failure_reasons: List[str] = []
             if test_status in ("failed", "error"):
                 failure_reasons.append("tests_failed")
             elif test_status in ("skipped", "unknown") and self._should_require_tests():

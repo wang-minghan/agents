@@ -79,8 +79,8 @@ poetry run python agents/restaurant_recommender/agent.py --input input.json --ou
 
 - `agents/restaurant_recommender/config/config.yaml`
 - 价格口径：`price_mode = per_person | total`，配合 `party_size`
-- Supabase 密钥：`agents/restaurant_recommender/config/supabase.yaml`（本地明文，不入库；包含 service_role_key/anon_key 注释）
-- 高德 Key：`agents/restaurant_recommender/config/amap.yaml`（本地明文，不入库）
+- Supabase 密钥：`agents/restaurant_recommender/config/supabase.yaml`（从 `supabase.example.yaml` 复制，本地明文，不入库）
+- 高德 Key：`agents/restaurant_recommender/config/amap.yaml`（从 `amap.example.yaml` 复制，本地明文，不入库）
 
 ## Supabase 表结构（最简）
 

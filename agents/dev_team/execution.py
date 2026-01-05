@@ -220,3 +220,23 @@ class LocalUnsafeExecutor(CodeExecutor):
             return f"FAIL: User simulation failed.\n{report[-2000:]}"
         except Exception as e:
             return f"ERROR: Simulation failed: {str(e)}"
+
+
+class DisabledExecutor(CodeExecutor):
+    def __init__(self, reason: str = "Execution disabled by config.") -> None:
+        self.reason = reason
+
+    def run_tests(self, test_dir: str) -> str:
+        return f"SKIPPED: {self.reason}"
+
+    def run_input_contract_tests(self, test_dir: str) -> str:
+        return f"SKIPPED: {self.reason}"
+
+    def run_user_simulation(self, test_dir: str) -> str:
+        return f"SKIPPED: {self.reason}"
+
+    def run_ui_tests(self, test_dir: str) -> str:
+        return f"SKIPPED: {self.reason}"
+
+    def run_coverage(self, test_dir: str) -> str:
+        return f"SKIPPED: {self.reason}"

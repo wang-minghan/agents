@@ -9,6 +9,9 @@ report:
 
 max_rounds: 5
 
+execution:
+  allow_unsafe: true
+
 quality_gates:
   require_tests: true
   require_ui_tests: true

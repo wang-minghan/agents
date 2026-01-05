@@ -36,6 +36,7 @@ poetry run python agents/excel_to_csv/agent.py --input <input_dir> --output <out
 
 - 默认读取 `agents/excel_to_csv/config/llm.yaml`
 - 可通过 `--llm-config` 指定
+ - 本地密钥建议从 `agents/excel_to_csv/config/llm.example.yaml` 复制生成
 
 示例字段（多模型可选）：
 
@@ -73,6 +74,7 @@ force_chat: false
 
 - 默认读取 `agents/excel_to_csv/config/langsmith.yaml`
 - 可通过 `--langsmith-config` 指定
+ - 本地密钥建议从 `agents/excel_to_csv/config/langsmith.example.yaml` 复制生成
 
 示例字段：
 

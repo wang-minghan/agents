@@ -1746,10 +1746,7 @@ class BaseOrchestrator:
             agent = self.agent_factory(jd, self.config, self.shared_memory, self.output_dir)
 
             is_qa = agent.role_type == "QA" or "QA" in role_name or "Test" in role_name
-            is_final_approver = any(
-                key in role_name.lower()
-                for key in ("planner", "product", "pm", "project", "owner", "负责人", "产品", "规划")
-            )
+            is_final_approver = self._is_final_approver_role(role_name)
 
             if is_qa:
                 self.qa_agent = agent
@@ -1761,6 +1758,16 @@ class BaseOrchestrator:
             else:
                 self.agents.append(agent)
                 print(f"    └── 已指派工程师: {role_name}")
+
+    def _is_final_approver_role(self, role_name: str) -> bool:
+        if any(token in role_name for token in ("负责人", "产品", "规划")):
+            return True
+        lowered = role_name.lower()
+        if re.search(r"\b(pm|planner|product|owner)\b", lowered):
+            return True
+        if re.search(r"\b(project manager|product manager|project owner|product owner)\b", lowered):
+            return True
+        return False
 
     def run_collaboration(self, max_rounds: int = 5):
         started_at = self._utcnow()

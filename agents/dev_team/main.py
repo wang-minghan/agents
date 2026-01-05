@@ -54,6 +54,39 @@ def _clear_planner_state() -> None:
     if STATE_PATH.exists():
         STATE_PATH.unlink()
 
+def _coerce_json(payload):
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError:
+            return payload
+    return payload
+
+def _force_planner_completion(planner_result: dict) -> dict:
+    planner_state = planner_result.get("planner_state") or {}
+    roles = planner_state.get("roles") or planner_result.get("roles") or []
+    current_jds = planner_state.get("current_jds") or {}
+    requirements = planner_state.get("requirements") or planner_result.get("requirements") or {}
+    tasks = planner_state.get("tasks") or planner_result.get("tasks") or []
+    final_jds = []
+    for role in roles:
+        role_name = role.get("role_name", "Unknown")
+        jd_content = current_jds.get(role_name) or role.get("initial_jd", "")
+        jd_payload = _coerce_json(jd_content)
+        if isinstance(jd_payload, dict):
+            jd_payload.setdefault("role_name", role_name)
+            final_jds.append(jd_payload)
+        else:
+            final_jds.append({"role_name": role_name, "content": jd_content})
+    return {
+        "status": "completed",
+        "requirements": requirements,
+        "tasks": tasks,
+        "final_jds": final_jds,
+        "validation_result": planner_result.get("validation_result"),
+        "forced_completion": True,
+    }
+
 def main():
     user_input = "我想做一个支持高并发的秒杀系统，需要考虑到缓存击穿、雪崩以及分布式锁的实现。"
     if len(sys.argv) > 1:
@@ -85,7 +118,9 @@ def main():
         print("⚠️ 检测到上次规划状态，尝试恢复。")
         input_payload["planner_state"] = cached_state
     planner_result = planner.invoke(input_payload)
-    if planner_result.get("status") == "needs_feedback":
+    feedback_rounds = 0
+    max_feedback_rounds = int(os.environ.get("DEV_TEAM_MAX_FEEDBACK_ROUNDS", 2))
+    while planner_result.get("status") == "needs_feedback" and feedback_rounds < max_feedback_rounds:
         print("⚠️ 未提供补充信息，使用AI默认假设继续规划。")
         if planner_result.get("planner_state"):
             _save_planner_state(user_input, planner_result["planner_state"], constraints)
@@ -103,12 +138,15 @@ def main():
         if constraints:
             input_payload["constraints"] = constraints
         planner_result = planner.invoke(input_payload)
-    if planner_result.get("status") == "completed":
-        _clear_planner_state()
-
+        feedback_rounds += 1
     if planner_result.get("status") != "completed":
-        print("❌ Task Planner 未能完成规划，请检查输入或配置。")
-        return
+        if planner_result.get("status") == "needs_feedback":
+            print("⚠️ 规划多轮未通过校验，转为最佳努力结果继续执行。")
+            planner_result = _force_planner_completion(planner_result)
+        else:
+            print("❌ Task Planner 未能完成规划，请检查输入或配置。")
+            return
+    _clear_planner_state()
 
     # 2. 启动动态 Multi-Agent 团队
     print("\n[Step 2] 启动动态 Multi-Agent 团队进行协作开发...")

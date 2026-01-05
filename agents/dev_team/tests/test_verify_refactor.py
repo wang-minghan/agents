@@ -110,3 +110,52 @@ def test_user_simulation_skips_when_missing(tmp_path: Path):
     executor = LocalUnsafeExecutor()
     result = executor.run_user_simulation(str(tmp_path))
     assert "SKIPPED: No user simulation script found." in result
+
+
+def test_final_approver_detection_avoids_false_pm(tmp_path: Path):
+    test_output_dir = tmp_path / "output"
+    test_output_dir.mkdir(parents=True, exist_ok=True)
+
+    config = {
+        "output_dir": str(test_output_dir),
+        "llm": {"model": "mock", "api_key": "mock"},
+        "roles": {
+            "engineer": {"prompt_path": _write_prompt(tmp_path, "engineer")},
+            "qa": {"prompt_path": _write_prompt(tmp_path, "qa")},
+        },
+        "review": {"use_llm": False},
+    }
+
+    class MockAgent:
+        def __init__(self, jd, cfg, mem, out):
+            self.role_name = jd.get("role_name")
+            self.role_type = jd.get("role_type", "ENGINEER")
+            self.output_dir = out
+            self._memory = mem
+
+        def run(self) -> str:
+            content = '<file path="safe.py">content</file>'
+            self._memory.add_output(self.role_name, content)
+            return content
+
+    def mock_factory(jd, cfg, mem, out) -> Agent:
+        return MockAgent(jd, cfg, mem, out)
+
+    orch = Commander(config, output_dir=str(test_output_dir), agent_factory=mock_factory)
+    planner_result = {
+        "final_jds": [
+            {"role_name": "Senior Backend Engineer (Development)", "role_type": "ENGINEER"}
+        ],
+        "requirements": {},
+    }
+    orch.initialize_team(planner_result)
+    assert orch.final_approver is None
+    assert len(orch.agents) == 1
+
+    orch_pm = Commander(config, output_dir=str(test_output_dir), agent_factory=mock_factory)
+    planner_result_pm = {
+        "final_jds": [{"role_name": "Technical PM", "role_type": "PM"}],
+        "requirements": {},
+    }
+    orch_pm.initialize_team(planner_result_pm)
+    assert orch_pm.final_approver is not None

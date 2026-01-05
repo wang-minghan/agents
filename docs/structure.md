@@ -22,3 +22,10 @@
 - `agents/<agent_name>` 内只放该 Agent 专属内容（含配置）
 - 对外入口优先 `agents/dev_team/main.py` 或 `ui/streamlit_app.py`
 - 配置仅保留必须项，默认行为由代码自动选择
+
+## 母体与产出机制说明
+
+- 母体：`agents/dev_team` 是默认协作引擎（Commander），负责在其工作区（workspace）基于用户需求完成规划、实现、测试与验证。
+- 产出与发布：通过验证的软件/Agent以独立目录的形式发布到 `agents/<agent_name>/`，并具备自己的 `agent.py`、`prompts/` 与 `config/`。
+- 对外入口：已发布的 Agent 可通过 `ui/streamlit_app.py` 进行聚合运行，或直接使用对应目录下的入口脚本。
+- 源头标注：发布的 Agent 文档需标注来源为“由 dev_team 工作区产出并发布”。

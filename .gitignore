@@ -8,11 +8,13 @@ output/
 
 # Agents
 agents/**/output/
+agents/**/output_result.json
 agents/**/config/llm.yaml
 agents/**/config/langsmith.yaml
 agents/**/config/amap.yaml
 agents/**/config/supabase.yaml
 agents/**/config/*.local.yaml
+agents/**/__pycache__/
 
 # Python
 __pycache__/

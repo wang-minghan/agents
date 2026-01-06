@@ -1116,7 +1116,11 @@ class BaseOrchestrator:
             if not self._is_safe_output_dir(self.output_dir):
                 raise RuntimeError(f"Unsafe output_dir for deletion: {self.output_dir}")
             shutil.rmtree(self.output_dir)
-        shutil.copytree(self.iteration_target, self.output_dir)
+        def _ignore_secrets(_: str, names: list[str]) -> set[str]:
+            secret_names = {"llm.yaml", "langsmith.yaml", "amap.yaml", "supabase.yaml"}
+            ignored = {name for name in names if name in secret_names or name.endswith(".local.yaml")}
+            return ignored
+        shutil.copytree(self.iteration_target, self.output_dir, ignore=_ignore_secrets)
         context = self._build_project_context(self.output_dir)
         self.shared_memory.global_context["project_context"] = context
         self._write_ast_baseline(context)

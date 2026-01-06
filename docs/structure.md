@@ -22,6 +22,7 @@
 - `agents/<agent_name>` 内只放该 Agent 专属内容（含配置）
 - 对外入口优先 `agents/dev_team/main.py` 或 `ui/streamlit_app.py`
 - 配置仅保留必须项，默认行为由代码自动选择
+- `agents/dev_team/output/` 与 `agents/dev_team/architect/output/` 为运行产物，不入库，需清理时可直接删除
 
 ## 母体与产出机制说明
 

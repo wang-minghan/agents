@@ -37,6 +37,7 @@ poetry run python agents/excel_to_csv/agent.py --input <input_dir> --output <out
 - 默认读取 `agents/excel_to_csv/config/llm.yaml`
 - 可通过 `--llm-config` 指定
  - 本地密钥建议从 `agents/excel_to_csv/config/llm.example.yaml` 复制生成
+- 若未在配置中填 `api_key`，可使用环境变量 `LLM_API_KEY` 或 `DEEPSEEK_API_KEY`
 
 示例字段（多模型可选）：
 

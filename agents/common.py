@@ -164,6 +164,23 @@ def _find_llm_config(base_dir: Path) -> Optional[Path]:
         current = parent
     return None
 
+
+def _resolve_llm_api_key(profile: Dict[str, Any]) -> Optional[str]:
+    api_key = str(profile.get("api_key") or "").strip()
+    if api_key and not api_key.startswith("<"):
+        return api_key
+    for env_name in (
+        "LLM_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            return env_value
+    return api_key or None
+
 def load_config(config_path: str = None, base_dir: Path = None) -> Dict[str, Any]:
     """
     Unified config loader. 
@@ -207,6 +224,9 @@ def load_config(config_path: str = None, base_dir: Path = None) -> Dict[str, Any
             llm_settings = yaml.safe_load(f) or {}
             active_profile = llm_settings.get("active_profile", "grok")
             profile = llm_settings.get("profiles", {}).get(active_profile, {})
+            resolved_api_key = _resolve_llm_api_key(profile)
+            if resolved_api_key:
+                profile["api_key"] = resolved_api_key
 
             # 注入配置: Global override or detailed injection
             # dev_team uses config["llm"] = profile

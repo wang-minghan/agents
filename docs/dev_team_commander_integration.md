@@ -21,6 +21,7 @@
 - 交叉核查的相似度比较对输出进行长度截断，降低性能开销
 - 写入代码时会跳过疑似占位/摘要代码（如大量 `...`），防止覆盖可用实现
 - 更新模式支持函数级替换：`<file><function name="...">...</function></file>`，用于只替换目标函数体
+- 迭代目标拷贝会跳过敏感配置（如 `llm.yaml`、`langsmith.yaml`、`*.local.yaml`），避免将密钥带入输出目录
 - 自动生成证据清单 `output/evidence/manifest.json` 并归档为 `output/evidence/evidence_pack_*.zip`
 - 门禁失败自动生成 Bug Card 并记录至 `output/evidence/bugs/`
 - UI 截图对齐元数据生成 `output/evidence/ui/comparison.json`
@@ -29,3 +30,4 @@
 
 配置
 - `agents/dev_team/config/config.yaml` 提供默认 max_rounds=5、UI 设计/测试/覆盖率门禁配置
+- LLM 密钥可通过环境变量 `LLM_API_KEY` 或 `DEEPSEEK_API_KEY` 提供

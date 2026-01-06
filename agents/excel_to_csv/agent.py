@@ -83,8 +83,31 @@ def _load_llm_config(config_path: Path) -> dict[str, object]:
             merged.update(common)
         if isinstance(selected, dict):
             merged.update(selected)
+        resolved_api_key = _resolve_llm_api_key(merged)
+        if resolved_api_key:
+            merged["api_key"] = resolved_api_key
         return merged
+    resolved_api_key = _resolve_llm_api_key(data)
+    if resolved_api_key:
+        data["api_key"] = resolved_api_key
     return data
+
+
+def _resolve_llm_api_key(config: dict[str, object]) -> str | None:
+    api_key = str(config.get("api_key") or "").strip()
+    if api_key and not api_key.startswith("<"):
+        return api_key
+    for env_name in (
+        "LLM_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        env_value = os.environ.get(env_name)
+        if env_value:
+            return env_value
+    return api_key or None
 
 
 def _load_langsmith_config(config_path: Path) -> dict[str, object]:
@@ -496,6 +519,44 @@ def _safe_int(value: object, fallback: int) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return fallback
+
+
+def _should_prefetch_sheets(
+    source_path: Path,
+    sheet_names: list[str],
+    config: dict[str, object],
+) -> bool:
+    enabled_raw = str(config.get("prefetch_sheets", "true")).strip().lower()
+    if enabled_raw in {"0", "false", "no", "off"}:
+        return False
+    if len(sheet_names) <= 1:
+        return False
+    max_sheets = _safe_int(config.get("prefetch_max_sheets", 12), 12)
+    if max_sheets > 0 and len(sheet_names) > max_sheets:
+        return False
+    max_mb = _safe_int(config.get("prefetch_max_mb", 50), 50)
+    if max_mb <= 0:
+        return False
+    try:
+        size_mb = source_path.stat().st_size / (1024 * 1024)
+    except OSError:
+        return False
+    return size_mb <= max_mb
+
+
+def _prefetch_excel_sheets(
+    excel: pd.ExcelFile, sheet_names: list[str]
+) -> dict[str, pd.DataFrame] | None:
+    try:
+        data = excel.parse(
+            sheet_name=sheet_names,
+            dtype=object,
+            header=None,
+            keep_default_na=False,
+        )
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _stable_signature(value: object) -> str:

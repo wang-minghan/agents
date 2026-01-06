@@ -13,7 +13,11 @@ class WorkflowRouter:
         enable_consensus: bool,
         enable_cross_validation: bool,
         has_qa: bool,
+        replan_needed: bool = False,
     ) -> List[str]:
+        if replan_needed:
+            return ["architect", "agents", "gate"]
+            
         phases = ["agents"]
         if enable_consensus:
             phases.append("consensus")

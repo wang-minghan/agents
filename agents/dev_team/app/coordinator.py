@@ -30,11 +30,13 @@ class PlanTaskCoordinator:
         enable_consensus: bool,
         enable_cross_validation: bool,
         has_qa: bool,
+        replan_needed: bool = False,
     ) -> List[str]:
         plan = self.router.phases(
             enable_consensus=enable_consensus,
             enable_cross_validation=enable_cross_validation,
             has_qa=has_qa,
+            replan_needed=replan_needed,
         )
         self._emit_event("round_plan_built", {"round": str(round_num), "plan": ",".join(plan)})
         return plan

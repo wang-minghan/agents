@@ -7,6 +7,13 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 class SharedMemoryStore:
+    """
+    共享记忆存储 (Shared Memory Store)
+    
+    架构方案中的 'Vector DB / 状态锁机制' 的轻量化实现。
+    负责维护全量上下文、设计蓝图、角色产出及各类质量门禁证据。
+    通过线程锁 (threading.Lock) 确保并发协作下的数据一致性。
+    """
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
         self.global_context: Dict[str, Any] = {}

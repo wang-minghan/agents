@@ -1718,14 +1718,25 @@ class BaseOrchestrator:
         run_status = "max_rounds_reached"
         testing_cfg = self.config.get("testing", {})
         testing_enabled = testing_cfg.get("enabled", True)
+        consecutive_failures = 0
+        replan_threshold = self.config.get("replan_threshold", 3)  # 默认连续 3 次失败触发重规划
+
         for round_num in range(start_round, max_rounds + 1):
             self._emit_event("round_started", {"round": round_num})
             print(f"\n🔄 --- 第 {round_num} 轮迭代 ---")
+            
+            # 检查是否需要触发全局重规划
+            replan_needed = consecutive_failures >= replan_threshold
+            if replan_needed:
+                print(f"    ⚠️ 检测到连续 {consecutive_failures} 次失败，触发全局重规划模式...")
+                self._emit_event("replan_triggered", {"consecutive_failures": str(consecutive_failures)})
+
             round_plan = self._coordinator.build_round_plan(
                 round_num=round_num,
                 enable_consensus=self._enable_consensus() and len(agents) > 1,
                 enable_cross_validation=self._enable_cross_validation() and len(agents) > 1,
                 has_qa=bool(qa_agents),
+                replan_needed=replan_needed,
             )
             round_report = {
                 "round": round_num,
@@ -1901,6 +1912,13 @@ class BaseOrchestrator:
                 run_status = failure_reasons[0]
             if "gate_decision" not in round_report:
                 self._finalize_round_report(round_report)
+            
+            # 更新连续失败计数
+            if round_report.get("gate_decision", {}).get("status") != "passed":
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+
             self.run_reports.append(round_report)
             self._save_resume_state(round_num, "in_progress")
             self._sync_iteration_artifacts()

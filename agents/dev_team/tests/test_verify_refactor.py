@@ -25,6 +25,13 @@ def test_architecture_and_safety(tmp_path: Path):
             "qa": {"prompt_path": _write_prompt(tmp_path, "qa")},
         },
         "review": {"use_llm": False},
+        "quality_gates": {
+            "require_ui_tests": False,
+            "require_ui_simulation": False,
+            "require_coverage": False,
+            "require_compliance": False,
+        },
+        "ui_design": {"enabled": False},
     }
 
     # 1. Default Execution (LocalUnsafeExecutor)
@@ -94,7 +101,13 @@ def test_architecture_and_safety(tmp_path: Path):
             return content
 
     orch_early = Commander(config, output_dir=str(test_output_dir), code_executor=MockPassExecutor())
-    orch_early.agents = [MockMemoryAgent({"role_name": "Dev"}, config, orch_early.shared_memory, test_output_dir)]
+    early_agent = MockMemoryAgent({"role_name": "Dev"}, config, orch_early.shared_memory, test_output_dir)
+    orch_early._worker_pool.add_agent(
+        early_agent,
+        "Dev",
+        is_qa=False,
+        is_final_approver=False,
+    )
     result = orch_early.run_collaboration(max_rounds=5)
     assert any(path.endswith("a.txt") for path in orch_early.shared_memory.saved_files)
     assert result["status"] == "passed"

@@ -1,14 +1,41 @@
+# Byte-compiled / optimized / DLL files
 .venv
 .deps
-configs/*
-__pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
 output/
+
+# Agents
 agents/**/output/
 agents/**/config/llm.yaml
 agents/**/config/langsmith.yaml
 agents/**/config/amap.yaml
 agents/**/config/supabase.yaml
 agents/**/config/*.local.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*$py.class
+
+# Virtual env
+.venv/
+venv/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

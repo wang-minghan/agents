@@ -1,16 +1,11 @@
 import ast
 import json
-import hashlib
 import os
 import shutil
 import time
 import fnmatch
 import re
 import threading
-import base64
-import mimetypes
-import subprocess
-import shlex
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Callable
@@ -25,6 +20,19 @@ from agents.dev_team.interfaces import CodeExecutor, Agent
 from agents.dev_team.execution import LocalUnsafeExecutor, DisabledExecutor
 from agents.common import find_project_root, parse_code_blocks, save_files_from_content
 from agents.dev_team.code_summarizer import CodeSummarizer
+from agents.dev_team.domain.models import Evidence, GateEvidence, GateRule
+from agents.dev_team.gates import QualityGate
+from agents.dev_team.capabilities import CapabilityRegistry
+from agents.dev_team.app import PlanTaskCoordinator, MilestoneStateMachine, WorkflowRouter
+from agents.dev_team.policies import (
+    PolicyRegistry,
+    ReviewPolicyImpl,
+    ConsensusPolicyImpl,
+    VerificationPolicyImpl,
+    CompliancePolicyImpl,
+    UIBaselinePolicy,
+)
+from agents.dev_team.services import ExecutionService, VerificationService, WorkerPool
 
 AgentFactory = Callable[[Dict[str, Any], Dict[str, Any], SharedMemoryStore, Path], Agent]
 
@@ -102,7 +110,30 @@ class BaseOrchestrator:
         self._last_synced_saved_files: set[str] = set()
         self._file_write_lock = threading.Lock()
         self._round_saved_files: set[str] = set()
-        self._frontend_detected: Optional[bool] = None
+        self._quality_gate = QualityGate(self._build_gate_rules())
+        self._capability_registry = CapabilityRegistry()
+        self._policy_registry = PolicyRegistry()
+        self._ui_policy = UIBaselinePolicy(self.config, self.output_dir, self.shared_memory)
+        self._policy_registry.register("review", ReviewPolicyImpl(self))
+        self._policy_registry.register("consensus", ConsensusPolicyImpl(self))
+        self._policy_registry.register("verification", VerificationPolicyImpl(self))
+        self._policy_registry.register(
+            "compliance",
+            CompliancePolicyImpl(self.config, self.output_dir, self.shared_memory),
+        )
+        self._policy_registry.register("ui_baseline", self._ui_policy)
+        self._workflow_router = WorkflowRouter(self.config)
+        self._milestone_fsm = MilestoneStateMachine()
+        self._coordinator = PlanTaskCoordinator(
+            self._workflow_router,
+            self._milestone_fsm,
+            self._policy_registry,
+            self._capability_registry,
+            self._emit_event,
+        )
+        self._worker_pool = WorkerPool(self._capability_registry)
+        self._execution_service = ExecutionService(self._run_agent_once)
+        self._verification_service = VerificationService(self.code_executor)
 
     def _clear_output_dir_on_start(self) -> None:
         if self._resume_state:
@@ -161,6 +192,9 @@ class BaseOrchestrator:
             "role_outputs": {k: list(v) for k, v in self.shared_memory.role_outputs.items()},
             "qa_feedback": list(self.shared_memory.qa_feedback),
             "saved_files": list(self.shared_memory.saved_files.keys()),
+            "domain_events": list(self.shared_memory.domain_events),
+            "evidence": list(self.shared_memory.evidence),
+            "gate_decisions": list(self.shared_memory.gate_decisions),
         }
 
     def _apply_resume_state(self, state: Dict[str, Any]) -> int:
@@ -173,6 +207,9 @@ class BaseOrchestrator:
             self.shared_memory.qa_feedback = list(memory.get("qa_feedback", []))
             saved_files = memory.get("saved_files", [])
             self.shared_memory.saved_files = {path: "saved" for path in saved_files}
+            self.shared_memory.domain_events = list(memory.get("domain_events", []))
+            self.shared_memory.evidence = list(memory.get("evidence", []))
+            self.shared_memory.gate_decisions = list(memory.get("gate_decisions", []))
         completed_rounds = state.get("completed_rounds")
         if not isinstance(completed_rounds, int):
             completed_rounds = len(self.run_reports)
@@ -442,6 +479,200 @@ class BaseOrchestrator:
         if len(text) <= limit:
             return text
         return text[:limit] + "\n...[Truncated]..."
+
+    def _emit_event(self, name: str, payload: Dict[str, Any]) -> None:
+        try:
+            self.shared_memory.add_domain_event(name, payload)
+        except Exception as exc:
+            print(f"    ⚠️ 事件记录失败: {exc}")
+
+    def _build_gate_rules(self) -> List[GateRule]:
+        gates = self.config.get("quality_gates", {})
+        return [
+            GateRule("tests", bool(gates.get("require_tests", True))),
+            GateRule("ui_tests", bool(gates.get("require_ui_tests", True))),
+            GateRule("coverage", bool(gates.get("require_coverage", True))),
+            GateRule("user_simulation", bool(gates.get("require_ui_simulation", True))),
+            GateRule("ui_evidence", bool(gates.get("require_ui_tests", True))),
+            GateRule("acceptance", True),
+            GateRule("input_contract", True),
+            GateRule("compliance", bool(gates.get("require_compliance", False))),
+        ]
+
+    def _build_round_evidence(self, round_report: Dict[str, Any]) -> List[Evidence]:
+        evidence: List[Evidence] = []
+        tests = round_report.get("tests", {})
+        evidence.append(
+            Evidence(
+                kind="tests",
+                status=tests.get("status", "unknown"),
+                summary=tests.get("summary", ""),
+                required=self._should_require_tests(),
+            )
+        )
+        ui_tests = round_report.get("ui_tests", {})
+        evidence.append(
+            Evidence(
+                kind="ui_tests",
+                status=ui_tests.get("status", "unknown"),
+                summary=ui_tests.get("summary", ""),
+                required=self._requires_ui_functional_audit() and self._should_require_ui_tests(),
+            )
+        )
+        coverage = round_report.get("coverage", {})
+        evidence.append(
+            Evidence(
+                kind="coverage",
+                status=coverage.get("status", "unknown"),
+                summary=coverage.get("summary", ""),
+                required=self._should_require_coverage(),
+            )
+        )
+        input_contract = round_report.get("input_contract", {})
+        evidence.append(
+            Evidence(
+                kind="input_contract",
+                status=input_contract.get("status", "unknown"),
+                summary=input_contract.get("summary", ""),
+                required=True,
+            )
+        )
+        ui_evidence = round_report.get("ui_evidence")
+        if ui_evidence:
+            evidence.append(
+                Evidence(
+                    kind="ui_evidence",
+                    status=ui_evidence.get("status", "unknown"),
+                    summary=str(ui_evidence.get("summary", "")),
+                    required=self._requires_ui_functional_audit(),
+                    metadata=ui_evidence,
+                )
+            )
+        user_simulation = round_report.get("user_simulation", {})
+        if user_simulation:
+            evidence.append(
+                Evidence(
+                    kind="user_simulation",
+                    status=user_simulation.get("status", "unknown"),
+                    summary=user_simulation.get("summary", ""),
+                    required=self._requires_ui_functional_audit() and self._should_require_ui_simulation(),
+                )
+            )
+        acceptance = round_report.get("acceptance", {})
+        if acceptance:
+            evidence.append(
+                Evidence(
+                    kind="acceptance",
+                    status=acceptance.get("status", "unknown"),
+                    summary=acceptance.get("summary", ""),
+                    required=True,
+                    metadata=acceptance,
+                )
+            )
+        compliance_report = self.shared_memory.global_context.get("compliance_report")
+        if isinstance(compliance_report, dict):
+            evidence.append(
+                Evidence(
+                    kind="compliance",
+                    status=compliance_report.get("status", "unknown"),
+                    summary=str(compliance_report.get("summary") or compliance_report.get("reason") or ""),
+                    required=self.config.get("quality_gates", {}).get("require_compliance", False),
+                    metadata=compliance_report,
+                )
+            )
+        consensus = round_report.get("consensus")
+        if consensus:
+            evidence.append(
+                Evidence(
+                    kind="consensus",
+                    status=consensus.get("status", "unknown"),
+                    summary=consensus.get("summary", ""),
+                    required=False,
+                    metadata=consensus,
+                )
+            )
+        validation = round_report.get("validation")
+        if validation:
+            evidence.append(
+                Evidence(
+                    kind="cross_validation",
+                    status=validation.get("status", "unknown"),
+                    summary=validation.get("summary", ""),
+                    required=False,
+                    metadata=validation,
+                )
+            )
+        return evidence
+
+    def _finalize_round_report(self, round_report: Dict[str, Any]) -> None:
+        evidence = self._build_round_evidence(round_report)
+        evidence_payload = [item.to_dict() for item in evidence]
+        gate_evidence = [GateEvidence(rule_key=item.kind, evidence=item.to_dict()) for item in evidence]
+        gate_evidence_payload = [item.to_dict() for item in gate_evidence]
+        gate_decision = self._quality_gate.evaluate(evidence)
+        round_report["evidence"] = evidence_payload
+        round_report["gate_evidence"] = gate_evidence_payload
+        round_report["gate_decision"] = gate_decision.to_dict()
+        self.shared_memory.add_evidence(evidence_payload)
+        self.shared_memory.add_gate_decision(gate_decision.to_dict())
+        self._emit_event(
+            "gate_decision",
+            {"round": round_report.get("round"), **gate_decision.to_dict()},
+        )
+        self._emit_event(
+            "round_completed",
+            {"round": round_report.get("round"), "status": gate_decision.status},
+        )
+        if gate_decision.status == "passed":
+            state_event = "gate_passed"
+        else:
+            state_event = "gate_failed"
+        round_report["milestone_state"] = self._coordinator.transition(
+            state_event, round_num=round_report.get("round", 0)
+        )
+
+    def _rounds_policy(self) -> Dict[str, Any]:
+        return self.config.get("rounds_policy", {})
+
+    def _detect_high_risk(self, requirements: Any) -> bool:
+        if not requirements:
+            return False
+        policy = self._rounds_policy()
+        keywords = [kw.lower() for kw in policy.get("high_risk_keywords", [])]
+        text = json.dumps(requirements, ensure_ascii=False).lower()
+        if any(keyword in text for keyword in keywords):
+            return True
+        if isinstance(requirements, dict):
+            risks = requirements.get("risks") or requirements.get("risks_and_mitigations")
+            if isinstance(risks, list):
+                return bool(risks)
+            if isinstance(risks, str) and risks.strip() and risks.strip() != "未提供":
+                return True
+        return False
+
+    def _detect_high_demand(self, requirements: Any) -> bool:
+        if not requirements:
+            return False
+        policy = self._rounds_policy()
+        keywords = [kw.lower() for kw in policy.get("high_demand_keywords", [])]
+        text = json.dumps(requirements, ensure_ascii=False).lower()
+        if any(keyword in text for keyword in keywords):
+            return True
+        if isinstance(requirements, dict):
+            priority = str(requirements.get("priority", "")).lower()
+            if priority in ("high", "p0", "critical", "urgent"):
+                return True
+        return False
+
+    def _apply_rounds_policy(self, requested_rounds: int) -> int:
+        policy = self._rounds_policy()
+        min_rounds = int(policy.get("min_rounds", 1))
+        max_high_risk = int(policy.get("max_rounds_high_risk", requested_rounds))
+        requirements = self._get_requirements_payload()
+        rounds = max(requested_rounds, min_rounds)
+        if self._detect_high_risk(requirements) or self._detect_high_demand(requirements):
+            rounds = max(rounds, max_high_risk)
+        return rounds
 
     def _render_current_state_summary(
         self,
@@ -751,27 +982,6 @@ class BaseOrchestrator:
             return text
         return text[:limit] + "\n...[Truncated]..."
 
-    @staticmethod
-    def _classify_test_result(output: str) -> str:
-        if not output:
-            return "unknown"
-        normalized = output.strip().upper()
-        if normalized.startswith("SUCCESS"):
-            return "passed"
-        if normalized.startswith("FAIL"):
-            return "failed"
-        if normalized.startswith("ERROR"):
-            return "error"
-        if normalized.startswith("SKIPPED"):
-            return "skipped"
-        if "FAILED" in normalized or "FAIL" in normalized:
-            return "failed"
-        if "ERROR" in normalized:
-            return "error"
-        if "SKIPPED" in normalized:
-            return "skipped"
-        return "unknown"
-
     def _build_report(self, status: str, started_at: str) -> Dict[str, Any]:
         return {
             "status": status,
@@ -780,19 +990,83 @@ class BaseOrchestrator:
             "rounds": self.run_reports,
             "saved_files": sorted(self.shared_memory.saved_files.keys()),
             "qa_feedback": self.shared_memory.qa_feedback,
+            "domain_events": self.shared_memory.domain_events,
+            "evidence": self.shared_memory.evidence,
+            "gate_decisions": self.shared_memory.gate_decisions,
             "acceptance_criteria": self.shared_memory.global_context.get("acceptance_criteria", []),
             "ui_design": self.shared_memory.global_context.get("ui_design"),
             "ui_design_summary": self.shared_memory.global_context.get("ui_design_summary"),
+            "compliance_report": self.shared_memory.global_context.get("compliance_report"),
             "bug_cards": self.shared_memory.global_context.get("bug_cards", []),
             "review_docs": self.shared_memory.global_context.get("review_docs", {}),
             "report_path": str(self.report_path) if self.report_enabled else None,
         }
+
+    def _max_files_per_agent(self) -> int:
+        delivery_cfg = self.config.get("delivery", {})
+        try:
+            return int(delivery_cfg.get("max_files_per_agent", 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _max_modules_per_agent(self) -> int:
+        delivery_cfg = self.config.get("delivery", {})
+        try:
+            return int(delivery_cfg.get("max_modules_per_agent", 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _limit_agent_outputs(self, content: str, role_name: str) -> tuple[str, int]:
+        blocks = parse_code_blocks(content)
+        if not blocks:
+            return content, 0
+        module_limit = self._max_modules_per_agent()
+        if module_limit > 0:
+            modules: List[str] = []
+            for path, _ in blocks:
+                parts = Path(path.strip().replace("\\", "/")).parts
+                modules.append(parts[0] if parts else "")
+            if modules:
+                kept_module = modules[0]
+                if module_limit == 1:
+                    filtered = [
+                        block
+                        for block, module in zip(blocks, modules)
+                        if module == kept_module
+                    ]
+                    if len(filtered) != len(blocks):
+                        dropped = len(blocks) - len(filtered)
+                        trimmed = "\n".join(
+                            [f"<file path=\"{path}\">\n{body}\n</file>" for path, body in filtered]
+                        )
+                        print(f"    ⚠️ [{role_name}] 输出跨模块，已限制到模块 {kept_module}，丢弃 {dropped} 个文件")
+                        blocks = filtered
+
+        limit = self._max_files_per_agent()
+        if limit <= 0:
+            trimmed = "\n".join(
+                [f"<file path=\"{path}\">\n{body}\n</file>" for path, body in blocks]
+            )
+            return trimmed, 0
+        if len(blocks) <= limit:
+            trimmed = "\n".join(
+                [f"<file path=\"{path}\">\n{body}\n</file>" for path, body in blocks]
+            )
+            return trimmed, 0
+        kept = blocks[:limit]
+        trimmed = "\n".join(
+            [f"<file path=\"{path}\">\n{body}\n</file>" for path, body in kept]
+        )
+        dropped = len(blocks) - limit
+        print(f"    ⚠️ [{role_name}] 输出文件数超限，已截断 {dropped} 个文件")
+        return trimmed, dropped
 
     def _run_agent_once(self, agent: Agent) -> Dict[str, Any]:
         agent_report: Dict[str, Any] = {"role_name": agent.role_name}
         try:
             agent.run()
             output_content = self.shared_memory.get_latest_output(agent.role_name) or ""
+            output_content, dropped = self._limit_agent_outputs(output_content, agent.role_name)
             with self._file_write_lock:
                 saved_files = save_files_from_content(
                     output_content,
@@ -807,6 +1081,7 @@ class BaseOrchestrator:
                     "status": "completed",
                     "output_chars": len(output_content) if isinstance(output_content, str) else 0,
                     "saved_files": saved_files,
+                    "dropped_files": dropped,
                 }
             )
             print(f"    ✅ [{agent.role_name}] 完成工作")
@@ -971,61 +1246,28 @@ class BaseOrchestrator:
         return any(keyword in text for keyword in keywords)
 
     def _requires_ui_baseline_from_requirements(self, requirements: Any) -> bool:
-        text = str(requirements).lower()
-        keywords = ("前端", "ui", "界面", "页面", "网页", "frontend", "web", "design")
-        if any(keyword in text for keyword in keywords):
-            return True
-        return self._should_force_ui_design()
+        return self._ui_policy.requires_ui_baseline_from_requirements(requirements)
 
     def _requires_ui_baseline(self) -> bool:
-        requirements = self.shared_memory.global_context.get("requirements", "")
-        return self._requires_ui_baseline_from_requirements(requirements)
+        return self._ui_policy.requires_ui_baseline()
+
+    def _requires_ui_functional_audit(self) -> bool:
+        return self._ui_policy.requires_ui_functional_audit(self._get_requirements_payload())
 
     def _allow_missing_ui_baseline(self) -> bool:
-        return self.config.get("ui_design", {}).get("allow_without_baseline", True)
+        return self._ui_policy.allow_missing_baseline()
+
+    def _ui_baseline_required(self) -> bool:
+        return self._ui_policy.baseline_required()
+
+    def _user_baseline_configured(self) -> bool:
+        return self._ui_policy.user_baseline_configured()
 
     def _should_force_ui_design(self) -> bool:
-        ui_cfg = self.config.get("ui_design", {})
-        if ui_cfg.get("force_if_no_frontend", True) is False:
-            return False
-        return not self._detect_frontend_presence(self.output_dir)
+        return self._ui_policy.should_force_ui_design()
 
     def _detect_frontend_presence(self, root: Path, max_files: int = 300) -> bool:
-        if self._frontend_detected is not None:
-            return self._frontend_detected
-
-        frontend_dirs = {"ui", "frontend", "web", "client", "app"}
-        frontend_exts = {".html", ".css", ".js", ".jsx", ".tsx", ".vue", ".svelte"}
-        ui_py_markers = ("streamlit", "gradio", "dash", "fastapi.templating", "jinja2")
-        skip_dirs = {".git", ".venv", "__pycache__", ".pytest_cache", "output", "data", "evidence"}
-        scanned = 0
-
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [name for name in dirnames if name not in skip_dirs]
-            if Path(dirpath).name in frontend_dirs and filenames:
-                self._frontend_detected = True
-                return True
-            for filename in filenames:
-                scanned += 1
-                if scanned > max_files:
-                    break
-                path = Path(dirpath) / filename
-                if path.suffix in frontend_exts:
-                    self._frontend_detected = True
-                    return True
-                if path.suffix == ".py":
-                    try:
-                        content = path.read_text(encoding="utf-8", errors="ignore")[:2000].lower()
-                    except Exception:
-                        continue
-                    if any(marker in content for marker in ui_py_markers):
-                        self._frontend_detected = True
-                        return True
-            if scanned > max_files:
-                break
-
-        self._frontend_detected = False
-        return False
+        return self._ui_policy.detect_frontend_presence(root, max_files=max_files)
 
     def _should_require_ui_tests(self) -> bool:
         return self.config.get("quality_gates", {}).get("require_ui_tests", True)
@@ -1053,6 +1295,7 @@ class BaseOrchestrator:
         if self._requires_ui_baseline_from_requirements(requirements):
             _add("前端需先用 nanobanna 生成设计基线图，由 AI 读图形成实现摘要并据此开发")
             _add("前端必须具备 UI/交互测试，并纳入覆盖率门禁")
+            _add("交付时必须提供前端实现截图作为验收依据")
             requirements.setdefault("ui_required", True)
         requirements["derived_requirements"] = derived
 
@@ -1064,406 +1307,20 @@ class BaseOrchestrator:
         if self._should_require_coverage() and "覆盖率达标" not in acceptance:
             acceptance.append("覆盖率达标")
         if self._requires_ui_baseline_from_requirements(requirements):
-            if self._allow_missing_ui_baseline():
+            if "UI 实现截图齐全" not in acceptance:
+                acceptance.append("UI 实现截图齐全")
+            if self._user_baseline_configured():
+                if "UI 设计基线与实现截图齐全" not in acceptance:
+                    acceptance.append("UI 设计基线与实现截图齐全")
+            elif self._allow_missing_ui_baseline():
                 optional_text = "UI 设计基线（如提供）与实现截图齐全"
                 if optional_text not in acceptance:
                     acceptance.append(optional_text)
-            else:
-                if "UI 设计基线与实现截图齐全" not in acceptance:
-                    acceptance.append("UI 设计基线与实现截图齐全")
         requirements["acceptance_criteria"] = acceptance
         return requirements
 
     def _check_ui_evidence(self) -> Dict[str, Any]:
-        evidence_dir = self.output_dir / "evidence" / "ui"
-        baseline = list(evidence_dir.glob("design_baseline.*")) + list(evidence_dir.glob("design_baseline_v*.*"))
-        implementation = list(evidence_dir.glob("implementation.*")) + list(evidence_dir.glob("implementation_v*.*"))
-        summary_required = self.config.get("ui_design", {}).get("summary_required", True)
-        summary_path = self.output_dir / "evidence" / "docs" / "ui_design_summary.md"
-        missing = []
-        if not baseline:
-            missing.append("design_baseline.*")
-        if not implementation:
-            missing.append("implementation.*")
-        if summary_required and not summary_path.exists():
-            missing.append("docs/ui_design_summary.md")
-        warnings: List[str] = []
-        if self._allow_missing_ui_baseline():
-            if "design_baseline.*" in missing:
-                missing.remove("design_baseline.*")
-                warnings.append("design_baseline_missing")
-            if "docs/ui_design_summary.md" in missing:
-                missing.remove("docs/ui_design_summary.md")
-                warnings.append("ui_design_summary_missing")
-        report = {
-            "status": "passed" if not missing else "failed",
-            "missing": missing,
-            "path": str(evidence_dir),
-            "warnings": warnings,
-        }
-        if not missing:
-            comparison = self._write_ui_comparison_report(evidence_dir, baseline[0], implementation[0])
-            report["comparison_report"] = comparison
-            if comparison.get("status") == "failed":
-                if self._ui_comparison_required():
-                    report["status"] = "failed"
-                else:
-                    report.setdefault("warnings", []).append("comparison_failed")
-        return report
-
-    def _write_ui_comparison_report(self, evidence_dir: Path, baseline: Path, implementation: Path) -> Dict[str, Any]:
-        comparison_required = self._ui_comparison_required()
-        diff_threshold = self._ui_diff_threshold()
-        warnings: List[str] = []
-
-        def _digest(path: Path) -> str:
-            hash_obj = hashlib.sha256()
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    hash_obj.update(chunk)
-            return hash_obj.hexdigest()
-
-        report: Dict[str, Any] = {
-            "status": "passed",
-            "baseline": {
-                "path": str(baseline),
-                "size_bytes": baseline.stat().st_size,
-                "sha256": _digest(baseline),
-            },
-            "implementation": {
-                "path": str(implementation),
-                "size_bytes": implementation.stat().st_size,
-                "sha256": _digest(implementation),
-            },
-        }
-        try:
-            from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageStat
-
-            base_img = Image.open(baseline).convert("RGB")
-            impl_img = Image.open(implementation).convert("RGB")
-            report["sizes"] = {"baseline": base_img.size, "implementation": impl_img.size}
-
-            layout_size = self._ui_layout_compare_size()
-            edge_threshold = self._ui_edge_threshold()
-            layout_threshold = self._ui_layout_threshold()
-
-            def _edge_map(image: Image.Image) -> Image.Image:
-                gray = image.convert("L")
-                edges = gray.filter(ImageFilter.FIND_EDGES)
-                edges = ImageOps.autocontrast(edges)
-                return edges.point(lambda p: 255 if p > edge_threshold else 0)
-
-            def _similarity(img_a: Image.Image, img_b: Image.Image) -> float:
-                diff = ImageChops.difference(img_a, img_b)
-                stat = ImageStat.Stat(diff)
-                mean = stat.mean[0] if stat.mean else 255.0
-                score = 1.0 - (mean / 255.0)
-                return max(0.0, min(1.0, score))
-
-            base_layout = _edge_map(base_img.resize(layout_size, Image.BILINEAR))
-            impl_layout = _edge_map(impl_img.resize(layout_size, Image.BILINEAR))
-            layout_similarity = _similarity(base_layout, impl_layout)
-            report["layout_similarity"] = {
-                "score": round(layout_similarity, 4),
-                "threshold": layout_threshold,
-                "status": "passed" if layout_similarity >= layout_threshold else "failed",
-            }
-            if layout_similarity < layout_threshold:
-                if comparison_required:
-                    report["status"] = "failed"
-                else:
-                    warnings.append("layout_similarity_below_threshold")
-
-            if base_img.size != impl_img.size:
-                if comparison_required:
-                    report["status"] = "failed"
-                else:
-                    warnings.append("size_mismatch")
-                report["pixel_diff"] = {"status": "failed", "reason": "size_mismatch"}
-            else:
-                diff = ImageChops.difference(base_img, impl_img)
-                total_pixels = base_img.size[0] * base_img.size[1]
-                diff_l = diff.convert("L")
-                histogram = diff_l.histogram()
-                mismatched = total_pixels - histogram[0]
-                ratio = mismatched / total_pixels if total_pixels else 0.0
-                diff_path = evidence_dir / "diff.png"
-                diff.save(diff_path)
-                threshold = diff_threshold
-                report["pixel_diff"] = {
-                    "status": "failed" if ratio > threshold else "passed",
-                    "mismatch_ratio": ratio,
-                    "threshold": threshold,
-                    "diff_path": str(diff_path),
-                }
-                if ratio > threshold:
-                    if comparison_required:
-                        report["status"] = "failed"
-                    else:
-                        warnings.append("pixel_diff_exceeds_threshold")
-        except Exception as exc:
-            report["pixel_diff"] = {"status": "skipped", "reason": str(exc)}
-
-        report_path = evidence_dir / "comparison.json"
-        with open(report_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
-        report["report_path"] = str(report_path)
-        if warnings:
-            report["warnings"] = warnings
-        return report
-
-    def _ui_comparison_required(self) -> bool:
-        return self.config.get("ui_design", {}).get("comparison_required", False)
-
-    def _ui_diff_threshold(self) -> float:
-        raw = self.config.get("ui_design", {}).get("pixel_diff_threshold", 0.15)
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            return 0.15
-
-    def _ui_layout_threshold(self) -> float:
-        raw = self.config.get("ui_design", {}).get("layout_similarity_threshold", 0.75)
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            return 0.75
-
-    def _ui_edge_threshold(self) -> int:
-        raw = self.config.get("ui_design", {}).get("edge_threshold", 20)
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            return 20
-
-    def _ui_layout_compare_size(self) -> tuple[int, int]:
-        raw = self.config.get("ui_design", {}).get("layout_compare_size", [192, 192])
-        if isinstance(raw, (list, tuple)) and len(raw) == 2:
-            try:
-                return int(raw[0]), int(raw[1])
-            except (TypeError, ValueError):
-                pass
-        return (192, 192)
-
-    def _build_ui_design_prompt(self, requirements: Dict[str, Any]) -> str:
-        goal = requirements.get("goal") or requirements.get("summary") or "未提供"
-        features = requirements.get("key_features") or requirements.get("functional_requirements") or []
-        if isinstance(features, list):
-            features_text = "; ".join([str(item) for item in features if str(item).strip()])
-        else:
-            features_text = str(features)
-        constraints = requirements.get("constraints") or []
-        if isinstance(constraints, list):
-            constraints_text = "; ".join([str(item) for item in constraints if str(item).strip()])
-        else:
-            constraints_text = str(constraints)
-        prompt = (
-            "为以下产品生成前端场景设计图（包含布局、关键组件、状态与交互提示）。"
-            "要求：商业可用、结构清晰、信息层级明确。\n"
-            f"目标: {goal}\n"
-            f"关键功能: {features_text}\n"
-            f"约束: {constraints_text}\n"
-        )
-        return prompt
-
-    def _build_nanobanna_command(self, prompt: str, output_path: Path) -> List[str]:
-        ui_cfg = self.config.get("ui_design", {})
-        if isinstance(ui_cfg.get("command"), list):
-            cmd = list(ui_cfg["command"])
-            base_dir = find_project_root(Path(__file__).parent)
-            for idx, arg in enumerate(cmd):
-                if not isinstance(arg, str) or not arg.endswith(".py"):
-                    continue
-                script_path = Path(arg)
-                if script_path.is_absolute():
-                    continue
-                cmd[idx] = str((base_dir / script_path).resolve())
-            prompt_arg = ui_cfg.get("prompt_arg", "--prompt")
-            output_arg = ui_cfg.get("output_arg", "--output")
-            cmd.extend([prompt_arg, prompt, output_arg, str(output_path)])
-            return cmd
-        template = ui_cfg.get("command_template")
-        if template:
-            rendered = template.format(prompt=prompt, output=str(output_path))
-            return shlex.split(rendered)
-        return ["nanobanna", "--prompt", prompt, "--output", str(output_path)]
-
-    def _run_nanobanna(self, prompt: str, output_path: Path) -> Dict[str, Any]:
-        ui_cfg = self.config.get("ui_design", {})
-        if ui_cfg.get("use_internal", True):
-            try:
-                from agents.dev_team.tools.nanobanna import generate_image
-
-                model = ui_cfg.get("model", "gemini-2.5-flash-image")
-                api_key = ui_cfg.get("api_key")
-                return generate_image(prompt, output_path, model=model, api_key=api_key)
-            except Exception as exc:
-                return {"status": "failed", "reason": f"internal_error: {exc}"}
-
-        cmd = self._build_nanobanna_command(prompt, output_path)
-        if not cmd:
-            return {"status": "failed", "reason": "command_missing"}
-        if shutil.which(cmd[0]) is None:
-            return {"status": "failed", "reason": f"{cmd[0]}_not_found"}
-        timeout = ui_cfg.get("timeout", 60)
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=self.output_dir,
-            )
-            if result.returncode != 0:
-                return {
-                    "status": "failed",
-                    "reason": "command_failed",
-                    "stderr": result.stderr[-2000:],
-                    "stdout": result.stdout[-1000:],
-                }
-            if not output_path.exists():
-                return {"status": "failed", "reason": "output_missing"}
-            return {"status": "completed", "path": str(output_path)}
-        except Exception as exc:
-            return {"status": "failed", "reason": str(exc)}
-
-    def _resolve_user_baseline(self, evidence_dir: Path) -> Optional[Path]:
-        ui_cfg = self.config.get("ui_design", {})
-        raw_path = ui_cfg.get("baseline_path") or os.environ.get("UI_DESIGN_BASELINE")
-        if not raw_path:
-            return None
-        base_dir = find_project_root(Path(__file__).parent)
-        candidate = Path(raw_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = (base_dir / candidate).resolve()
-        if not candidate.exists():
-            return None
-        suffix = candidate.suffix or ".png"
-        target = evidence_dir / f"design_baseline{suffix}"
-        if target.resolve() != candidate.resolve():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(candidate, target)
-        return target
-
-    @staticmethod
-    def _encode_image(path: Path, max_bytes: int = 2_000_000) -> Optional[str]:
-        if not path.exists() or not path.is_file():
-            return None
-        if path.stat().st_size > max_bytes:
-            return None
-        mime, _ = mimetypes.guess_type(path.name)
-        if not mime:
-            mime = "image/png"
-        payload = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f"data:{mime};base64,{payload}"
-
-    def _summarize_ui_baseline(self, baseline: Path, requirements: Dict[str, Any]) -> Dict[str, Any]:
-        ui_cfg = self.config.get("ui_design", {})
-        if ui_cfg.get("summary_enabled", True) is False:
-            return {"status": "skipped"}
-        llm_cfg = self.config.get("llm", {})
-        api_key = ui_cfg.get("summary_api_key") or llm_cfg.get("api_key")
-        if not api_key:
-            return {"status": "failed", "reason": "llm_not_configured"}
-        model = ui_cfg.get("summary_model") or llm_cfg.get("model", "gpt-4o")
-        api_base = ui_cfg.get("summary_api_base") or llm_cfg.get("api_base")
-        encoded = self._encode_image(baseline)
-        if not encoded:
-            return {"status": "failed", "reason": "image_unavailable"}
-
-        goal = requirements.get("goal") or requirements.get("summary") or ""
-        prompt = (
-            "你是资深前端设计评审官。请阅读设计基线图，输出可直接实现的前端设计摘要。\n"
-            "必须包含：信息架构/布局、关键组件清单、交互与状态、视觉风格提示、可访问性/响应式注意事项。\n"
-            "输出为中文 Markdown，避免空话。\n"
-            f"目标: {goal}\n"
-        )
-        try:
-            llm = ChatOpenAI(
-                model=model,
-                api_key=api_key,
-                base_url=api_base,
-                temperature=0.2,
-                timeout=60,
-                max_retries=1,
-            )
-            messages = [
-                SystemMessage(content="你是严谨的前端设计总结助手。"),
-                HumanMessage(
-                    content=[
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": encoded, "detail": "high"}},
-                    ]
-                ),
-            ]
-            response = llm.invoke(messages)
-            content = response.content if hasattr(response, "content") else str(response)
-            return {"status": "completed", "summary": str(content).strip()}
-        except Exception as exc:
-            return {"status": "failed", "reason": str(exc)}
-
-    def _prepare_ui_design_assets(self) -> Dict[str, Any]:
-        ui_cfg = self.config.get("ui_design", {})
-        if ui_cfg.get("enabled", True) is False:
-            return {"status": "skipped", "reason": "disabled"}
-
-        requirements = self._get_requirements_payload()
-        if not self._requires_ui_baseline_from_requirements(requirements):
-            return {"status": "skipped", "reason": "not_required"}
-
-        evidence_dir = self.output_dir / "evidence" / "ui"
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-        baseline_candidates = list(evidence_dir.glob("design_baseline.*")) + list(
-            evidence_dir.glob("design_baseline_v*.*")
-        )
-        baseline = baseline_candidates[0] if baseline_candidates else None
-        if baseline is None:
-            baseline = self._resolve_user_baseline(evidence_dir)
-        report: Dict[str, Any] = {"status": "passed", "baseline": str(baseline) if baseline else None}
-
-        if baseline is None:
-            output_name = ui_cfg.get("baseline_name", "design_baseline.png")
-            output_path = evidence_dir / output_name
-            prompt = self._build_ui_design_prompt(requirements)
-            gen_result = self._run_nanobanna(prompt, output_path)
-            if gen_result.get("status") != "completed":
-                if self._allow_missing_ui_baseline():
-                    report.update(
-                        {
-                            "status": "skipped",
-                            "reason": "baseline_unavailable",
-                            "detail": gen_result,
-                        }
-                    )
-                    return report
-                report.update({"status": "failed", "reason": "baseline_generation_failed", "detail": gen_result})
-                return report
-            baseline = output_path
-            report["baseline"] = str(baseline)
-
-        summary_path = self.output_dir / "evidence" / "docs" / "ui_design_summary.md"
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        if not summary_path.exists() or summary_path.stat().st_size == 0:
-            summary_result = self._summarize_ui_baseline(baseline, requirements)
-            report["summary"] = summary_result
-            if summary_result.get("status") == "completed":
-                summary_text = summary_result.get("summary", "")
-                summary_path.write_text(summary_text, encoding="utf-8")
-                self.shared_memory.global_context["ui_design_summary"] = self._truncate(summary_text, 2000)
-            elif ui_cfg.get("summary_required", True) and not self._allow_missing_ui_baseline():
-                report["status"] = "failed"
-                report["reason"] = "summary_generation_failed"
-                return report
-        else:
-            existing = summary_path.read_text(encoding="utf-8", errors="ignore")
-            self.shared_memory.global_context["ui_design_summary"] = self._truncate(existing, 2000)
-
-        self.shared_memory.global_context["ui_design"] = {
-            "tool": ui_cfg.get("tool", "nanobanna"),
-            "baseline": str(baseline),
-            "summary_path": str(summary_path),
-        }
-        return report
+        return self._ui_policy.check_ui_evidence()
 
     def _load_json_template(self, filename: str) -> Dict[str, Any]:
         template_dir = self._get_review_template_dir()
@@ -1613,6 +1470,9 @@ class BaseOrchestrator:
             "generated_at": self._utcnow(),
             "ui_design": self.shared_memory.global_context.get("ui_design"),
             "ui_design_summary": self.shared_memory.global_context.get("ui_design_summary"),
+            "evidence": round_report.get("evidence", []),
+            "gate_evidence": round_report.get("gate_evidence", []),
+            "gate_decision": round_report.get("gate_decision"),
             "ui_evidence": round_report.get("ui_evidence"),
             "user_simulation": round_report.get("user_simulation"),
             "input_contract": round_report.get("input_contract"),
@@ -1758,6 +1618,12 @@ class BaseOrchestrator:
             else:
                 self.agents.append(agent)
                 print(f"    └── 已指派工程师: {role_name}")
+            self._worker_pool.add_agent(
+                agent,
+                role_name,
+                is_qa=is_qa,
+                is_final_approver=is_final_approver,
+            )
 
     def _is_final_approver_role(self, role_name: str) -> bool:
         if any(token in role_name for token in ("负责人", "产品", "规划")):
@@ -1772,8 +1638,11 @@ class BaseOrchestrator:
     def run_collaboration(self, max_rounds: int = 5):
         started_at = self._utcnow()
         self.run_reports = []
+        max_rounds = self._apply_rounds_policy(max_rounds)
         start_round = self._resume_if_available(max_rounds)
-        if not self.agents:
+        agents = self._worker_pool.agents()
+        qa_agents = self._worker_pool.qa_agents()
+        if not agents:
             print("❌ 错误: 团队未初始化或没有工程师角色。")
             report = self._build_report("no_engineers", started_at)
             self._write_report(report)
@@ -1784,7 +1653,7 @@ class BaseOrchestrator:
                 "report": report,
             }
 
-        review_report = self._ensure_review_artifacts()
+        review_report = self._policy_registry.run_first("review") or self._ensure_review_artifacts()
         self.shared_memory.global_context["review_artifacts"] = review_report
         if review_report.get("status") not in ("passed", "skipped"):
             report = self._build_report("review_missing", started_at)
@@ -1792,6 +1661,22 @@ class BaseOrchestrator:
             self._write_report(report)
             return {
                 "status": "review_missing",
+                "outputs": self.shared_memory.get_all_outputs(),
+                "report": report,
+            }
+
+        compliance_report = self._policy_registry.run_first("compliance") or {"status": "skipped"}
+        self.shared_memory.global_context["compliance_report"] = compliance_report
+        self._emit_event("compliance_checked", {"status": compliance_report.get("status", "unknown")})
+        if (
+            compliance_report.get("status") == "failed"
+            and self.config.get("compliance", {}).get("block_on_failure", False)
+        ):
+            report = self._build_report("compliance_failed", started_at)
+            report["compliance"] = compliance_report
+            self._write_report(report)
+            return {
+                "status": "compliance_failed",
                 "outputs": self.shared_memory.get_all_outputs(),
                 "report": report,
             }
@@ -1806,7 +1691,8 @@ class BaseOrchestrator:
                 "report": report,
             }
 
-        ui_design_report = self._prepare_ui_design_assets()
+        requirements = self._get_requirements_payload()
+        ui_design_report = self._policy_registry.run_first("ui_baseline", requirements=requirements)
         self.shared_memory.global_context["ui_design_report"] = ui_design_report
         allow_missing_ui = self._allow_missing_ui_baseline()
         if (
@@ -1824,14 +1710,26 @@ class BaseOrchestrator:
                 "report": report,
             }
 
+        self._emit_event(
+            "collaboration_started",
+            {"max_rounds": max_rounds, "start_round": start_round},
+        )
         print(f"\n🚀 启动 TDD 协作流程 (最大轮次: {max_rounds})...")
         run_status = "max_rounds_reached"
         testing_cfg = self.config.get("testing", {})
         testing_enabled = testing_cfg.get("enabled", True)
         for round_num in range(start_round, max_rounds + 1):
+            self._emit_event("round_started", {"round": round_num})
             print(f"\n🔄 --- 第 {round_num} 轮迭代 ---")
+            round_plan = self._coordinator.build_round_plan(
+                round_num=round_num,
+                enable_consensus=self._enable_consensus() and len(agents) > 1,
+                enable_cross_validation=self._enable_cross_validation() and len(agents) > 1,
+                has_qa=bool(qa_agents),
+            )
             round_report = {
                 "round": round_num,
+                "plan": round_plan,
                 "agents": [],
                 "tests": {},
                 "qa_feedback_recorded": False,
@@ -1840,12 +1738,10 @@ class BaseOrchestrator:
             }
             self._round_saved_files = set()
             failure_reasons: List[str] = []
+            round_report["milestone_state"] = self._coordinator.transition("start_round", round_num=round_num)
 
-            max_workers = min(4, max(1, len(self.agents)))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(self._run_agent_once, agent) for agent in self.agents]
-                for future in as_completed(futures):
-                    round_report["agents"].append(future.result())
+            round_report["agents"] = self._execution_service.run_agents(agents)
+            round_report["milestone_state"] = self._coordinator.transition("agents_done", round_num=round_num)
 
             refactor_suggestions = self._collect_refactor_suggestions(self.output_dir)
             round_report["refactor_suggestions"] = refactor_suggestions
@@ -1853,71 +1749,47 @@ class BaseOrchestrator:
             if refactor_suggestions:
                 print("    ⚠️ 发现需要拆解的长函数，已生成建议。")
 
-            if self._enable_consensus() and len(self.agents) > 1:
+            if self._enable_consensus() and len(agents) > 1:
                 print("\n🤝 阶段2: 共识达成")
-                consensus_result = self._run_consensus_phase(round_num)
+                consensus_result = self._policy_registry.run_first("consensus", round_num=round_num)
                 round_report["consensus"] = self._serialize_phase_result(consensus_result)
                 if consensus_result is not None and self._should_block_on_consensus(consensus_result):
                     failure_reasons.append("consensus_failed")
 
             print("\n🧪 阶段3: 自动化测试")
             print("    🧪 [System] 正在执行自动化测试/语法检查...")
-            if testing_enabled:
-                test_results = self.code_executor.run_tests(str(self.output_dir))
-            else:
-                test_results = "SKIPPED: Testing disabled by config."
-
-            self.shared_memory.global_context["latest_test_results"] = test_results
-            summary_lines = test_results.splitlines()
-            summary = summary_lines[0] if summary_lines else "No test output."
+            verification_results = self._verification_service.run_round(
+                str(self.output_dir),
+                ui_required=self._requires_ui_functional_audit(),
+                testing_enabled=testing_enabled,
+            )
+            round_report.update(verification_results)
+            test_output = verification_results["tests"]["output"]
+            summary = verification_results["tests"]["summary"]
             print(f"    📋 测试结果摘要: {summary}")
-            test_status = self._classify_test_result(test_results)
+            test_status = verification_results["tests"]["status"]
+            self.shared_memory.global_context["latest_test_results"] = test_output
             self.shared_memory.global_context["latest_test_status"] = test_status
-            round_report["tests"] = {"status": test_status, "summary": summary}
 
-            if self._enable_cross_validation() and len(self.agents) > 1:
+            if self._enable_cross_validation() and len(agents) > 1:
                 print("\n🔍 阶段4: 交叉核查")
-                validation_report = self._run_cross_validation_phase()
+                validation_report = self._policy_registry.run_first("verification")
                 round_report["validation"] = self._serialize_phase_result(validation_report)
                 if validation_report is not None and self._should_block_on_validation(validation_report):
                     failure_reasons.append("validation_failed")
 
-            ui_test_result = "SKIPPED: No UI tests."
-            if self._requires_ui_baseline() and hasattr(self.code_executor, "run_ui_tests"):
-                print("    🧪 [System] 正在执行 UI 测试...")
-                ui_test_result = self.code_executor.run_ui_tests(str(self.output_dir))
-            ui_test_status = self._classify_test_result(ui_test_result)
-            round_report["ui_tests"] = {
-                "status": ui_test_status,
-                "summary": ui_test_result.splitlines()[0] if ui_test_result else "No output",
-            }
-
-            coverage_result = "SKIPPED: No coverage run."
-            if hasattr(self.code_executor, "run_coverage"):
-                print("    🧪 [System] 正在执行覆盖率统计...")
-                coverage_result = self.code_executor.run_coverage(str(self.output_dir))
-            coverage_status = self._classify_test_result(coverage_result)
-            round_report["coverage"] = {
-                "status": coverage_status,
-                "summary": coverage_result.splitlines()[0] if coverage_result else "No output",
-            }
-
-            input_result = "SKIPPED: No input contract tests."
-            if hasattr(self.code_executor, "run_input_contract_tests"):
-                print("    🧪 [System] 正在执行输入契约测试...")
-                input_result = self.code_executor.run_input_contract_tests(str(self.output_dir))
-            input_status = self._classify_test_result(input_result)
-            round_report["input_contract"] = {
-                "status": input_status,
-                "summary": input_result.splitlines()[0] if input_result else "No output",
-            }
+            ui_test_status = round_report["ui_tests"]["status"]
+            coverage_status = round_report["coverage"]["status"]
+            input_status = round_report["input_contract"]["status"]
+            round_report["milestone_state"] = self._coordinator.transition("tests_done", round_num=round_num)
+            round_report["milestone_state"] = self._coordinator.transition("gating", round_num=round_num)
 
             if test_status == "passed":
                 print("    ✨ 自动化测试全部通过！")
                 if input_status in ("failed", "error"):
                     print("    ❌ 输入契约测试未通过，进入修复回合。")
                     failure_reasons.append("input_contract_failed")
-                if self._requires_ui_baseline() and self._should_require_ui_tests():
+                if self._requires_ui_functional_audit() and self._should_require_ui_tests():
                     if ui_test_status in ("failed", "error", "skipped", "unknown"):
                         print("    ❌ UI 测试未通过或缺失，进入修复回合。")
                         failure_reasons.append("ui_tests_failed")
@@ -1925,22 +1797,14 @@ class BaseOrchestrator:
                     if coverage_status in ("failed", "error", "skipped", "unknown"):
                         print("    ❌ 覆盖率统计未通过或缺失，进入修复回合。")
                         failure_reasons.append("coverage_failed")
-                if self._requires_ui_baseline():
+                if self._requires_ui_functional_audit():
                     ui_check = self._check_ui_evidence()
                     round_report["ui_evidence"] = ui_check
                     if ui_check["status"] != "passed":
                         print("    ❌ UI 证据不完整，进入修复回合。")
                         failure_reasons.append("ui_evidence_missing")
-                sim_result = "SKIPPED: No user simulation."
-                if hasattr(self.code_executor, "run_user_simulation"):
-                    print("    🧭 [System] 正在执行用户模拟测试...")
-                    sim_result = self.code_executor.run_user_simulation(str(self.output_dir))
-                sim_status = self._classify_test_result(sim_result)
-                round_report["user_simulation"] = {
-                    "status": sim_status,
-                    "summary": sim_result.splitlines()[0] if sim_result else "No output",
-                }
-                if self._requires_ui_baseline() and self._should_require_ui_simulation():
+                sim_status = round_report["user_simulation"]["status"]
+                if self._requires_ui_functional_audit() and self._should_require_ui_simulation():
                     if sim_status not in ("passed",):
                         print("    ❌ 用户模拟测试缺失或失败，进入修复回合。")
                         failure_reasons.append("user_simulation_failed")
@@ -1956,9 +1820,12 @@ class BaseOrchestrator:
 
                 if failure_reasons:
                     round_report["failure_reasons"] = failure_reasons
+                    self._finalize_round_report(round_report)
                     self._write_bug_card(failure_reasons[0], round_report)
                     self._write_evidence_manifest(round_report)
                     self._archive_evidence()
+                    if "gate_decision" not in round_report:
+                        self._finalize_round_report(round_report)
                     self.run_reports.append(round_report)
                     self._save_resume_state(round_num, "in_progress")
                     self._sync_iteration_artifacts()
@@ -1967,15 +1834,19 @@ class BaseOrchestrator:
                         continue
                     break
 
+                self._finalize_round_report(round_report)
                 self._write_evidence_manifest(round_report)
                 self._archive_evidence()
                 approved = self._run_approval_gate(round_num, test_status, round_report)
                 if not approved:
                     print("    ⚠️ 审批未通过，进入修复回合。")
                     round_report["failure_reasons"] = ["approval_failed"]
+                    self._finalize_round_report(round_report)
                     self._write_bug_card("approval_failed", round_report)
                     self._write_evidence_manifest(round_report)
                     self._archive_evidence()
+                    if "gate_decision" not in round_report:
+                        self._finalize_round_report(round_report)
                     self.run_reports.append(round_report)
                     self._save_resume_state(round_num, "in_progress")
                     self._sync_iteration_artifacts()
@@ -1983,15 +1854,17 @@ class BaseOrchestrator:
                     if round_num < max_rounds:
                         continue
                     break
+                if "gate_decision" not in round_report:
+                    self._finalize_round_report(round_report)
                 self.run_reports.append(round_report)
                 print("    >>> 提前结束协作循环。")
                 run_status = "passed"
                 break
 
-            if self.qa_agents:
+            if qa_agents:
                 print(f"\n🔍 [QA] 正在进行代码审查与测试分析...")
                 qa_reports = []
-                max_workers = min(4, max(1, len(self.qa_agents)))
+                max_workers = min(4, max(1, len(qa_agents)))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [
                         executor.submit(
@@ -2000,7 +1873,7 @@ class BaseOrchestrator:
                             round_num,
                             "Passed" if test_status == "passed" else "Failed",
                         )
-                        for agent in self.qa_agents
+                        for agent in qa_agents
                     ]
                     for future in as_completed(futures):
                         qa_reports.append(future.result())
@@ -2012,7 +1885,7 @@ class BaseOrchestrator:
                 failure_reasons.append("tests_failed")
             elif test_status in ("skipped", "unknown") and self._should_require_tests():
                 failure_reasons.append("tests_failed")
-            if self._requires_ui_baseline() and self._should_require_ui_tests():
+            if self._requires_ui_functional_audit() and self._should_require_ui_tests():
                 if ui_test_status in ("failed", "error", "skipped", "unknown"):
                     failure_reasons.append("ui_tests_failed")
             if self._should_require_coverage():
@@ -2021,10 +1894,13 @@ class BaseOrchestrator:
 
             if failure_reasons:
                 round_report["failure_reasons"] = failure_reasons
+                self._finalize_round_report(round_report)
                 self._write_bug_card(failure_reasons[0], round_report)
                 self._write_evidence_manifest(round_report)
                 self._archive_evidence()
                 run_status = failure_reasons[0]
+            if "gate_decision" not in round_report:
+                self._finalize_round_report(round_report)
             self.run_reports.append(round_report)
             self._save_resume_state(round_num, "in_progress")
             self._sync_iteration_artifacts()

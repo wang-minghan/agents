@@ -45,11 +45,14 @@
 - 像素级对比：生成 `output/evidence/ui/diff.png`，阈值与是否阻断可配置；布局相似度可独立配置阈值
 - 输入问题：输入契约 + 边界样例 + 失败日志
 - 逻辑问题：最小复现用例 + 单测输出
+- 合规问题：合规扫描结果 + 发现项清单
 - 交付要求：Evidence Pack 与 Bug Card 绑定归档
 - 用户模拟：覆盖路径清单 + 关键截图 + 自动化输出
 - 归档要求：生成 `output/evidence/manifest.json` 与 `output/evidence/evidence_pack_*.zip`
 - 迭代基线：生成 `output/evidence/ast/ast_baseline.md` 记录现有代码结构
 - 断点与基线同步：中断后从 `output/evidence/collaboration_state.json` 续跑；证据与设计文档同步到迭代目标根目录 `evidence/`
+- Gate 决策：`manifest.json` 必须包含 gate_decision 与 evidence 列表，保证门禁可追溯
+- Gate 证据：`manifest.json` 必须包含 gate_evidence（规则->证据映射）
 
 四、输入鲁棒性标准
 - 输入契约：类型、范围、空值、默认值、容错策略
@@ -68,6 +71,7 @@
   - 验收清单完成
   - Evidence Pack 完整
   - 复测通过
+  - 合规扫描通过
   - 若为前端任务：必须存在设计基线、读图摘要、实现截图与 UI 测试覆盖率
 - 未通过：阻断交付，自动进入修复回合
 
@@ -120,6 +124,10 @@
 - 测试通过后执行用户模拟脚本（如存在），失败即阻断交付
 - 若为 1→100 迭代，自动记录 AST 基线并注入规划约束
 - 若提供 UI 设计基线/实现截图，需求分析阶段自动走多模态输入
+
+八、轮次策略（质量优先）
+- 最小轮次：默认至少 3 轮
+- 高风险/高需求：触发最多 9 轮，直到风险收敛或达到上限
 
 行动清单
 - What：将质量闭环接入 dev_team 主流程；Who：我；When：本轮

@@ -3,6 +3,7 @@ from agents.dev_team.utils import parse_code_blocks
 import re
 import json
 import threading
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 class SharedMemoryStore:
@@ -13,6 +14,9 @@ class SharedMemoryStore:
         self.qa_feedback: List[Dict[str, Any]] = []
         self.saved_files: Dict[str, str] = {} # Path -> Content or Metadata
         self._latest_output_summary: Dict[str, str] = {}
+        self.domain_events: List[Dict[str, Any]] = []
+        self.evidence: List[Dict[str, Any]] = []
+        self.gate_decisions: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
 
     @staticmethod
@@ -54,6 +58,25 @@ class SharedMemoryStore:
         with self._lock:
             for path in file_paths:
                 self.saved_files[path] = "saved"
+
+    @staticmethod
+    def _utcnow() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def add_domain_event(self, name: str, payload: Dict[str, Any]):
+        event = {"name": name, "payload": payload, "occurred_at": self._utcnow()}
+        with self._lock:
+            self.domain_events.append(event)
+
+    def add_evidence(self, evidence_items: List[Dict[str, Any]]):
+        if not evidence_items:
+            return
+        with self._lock:
+            self.evidence.extend(evidence_items)
+
+    def add_gate_decision(self, decision: Dict[str, Any]):
+        with self._lock:
+            self.gate_decisions.append(decision)
 
     def get_all_outputs(self) -> Dict[str, List[str]]:
         with self._lock:

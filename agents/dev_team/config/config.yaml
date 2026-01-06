@@ -9,6 +9,32 @@ report:
 
 max_rounds: 5
 
+rounds_policy:
+  min_rounds: 3
+  max_rounds_high_risk: 9
+  high_risk_keywords:
+    - "高风险"
+    - "high risk"
+    - "安全"
+    - "security"
+    - "合规"
+    - "compliance"
+    - "敏感"
+    - "漏洞"
+  high_demand_keywords:
+    - "高需求"
+    - "高优先级"
+    - "高质量"
+    - "完美"
+    - "严格"
+    - "必须"
+    - "商用"
+    - "商业"
+
+delivery:
+  max_files_per_agent: 1
+  max_modules_per_agent: 1
+
 execution:
   allow_unsafe: true
 
@@ -17,6 +43,7 @@ quality_gates:
   require_ui_tests: true
   require_coverage: true
   require_ui_simulation: true
+  require_compliance: true
 
 testing:
   per_file: true
@@ -48,3 +75,13 @@ ui_design:
   baseline_name: "design_baseline.png"
   summary_enabled: true
   summary_required: true
+
+compliance:
+  enabled: true
+  block_on_failure: true
+  require_safe_execution: false
+  max_bytes: 200000
+  skip_dirs:
+    - "evidence"
+  deny_globs:
+    - "**/*.example.*"

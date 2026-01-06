@@ -1,6 +1,7 @@
 import subprocess
 import shlex
 import fnmatch
+import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Union
 
@@ -58,19 +59,48 @@ class LocalUnsafeExecutor(CodeExecutor):
                 matches.append(path)
         return sorted({p.resolve() for p in matches})
 
+    def _ensure_pytest(self) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return None
+        except Exception:
+            pass
+        try:
+            install = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "pytest", "pytest-cov"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if install.returncode == 0:
+                return None
+            return f"ERROR: pytest install failed.\n{install.stdout}\n{install.stderr}"
+        except Exception as e:
+            return f"ERROR: pytest install failed: {str(e)}"
+
     def run_tests(self, test_dir: str) -> str:
         path = Path(test_dir)
         if not path.exists():
             return "SKIPPED: Target directory for tests does not exist."
+
+        install_error = self._ensure_pytest()
+        if install_error:
+            return install_error
 
         if not self.test_cmd:
             test_files = self._discover_pytests(path)
             if not test_files:
                 return "SKIPPED: No tests found."
             if self.per_file:
-                cmd = [[ "pytest", "-x", str(test_file) ] for test_file in test_files]
+                cmd = [[sys.executable, "-m", "pytest", "-x", str(test_file)] for test_file in test_files]
             else:
-                cmd = ["pytest", "-x", str(path)]
+                cmd = [sys.executable, "-m", "pytest", "-x", str(path)]
         else:
             cmd = self._normalize_cmd(path)
         if not cmd:
@@ -113,6 +143,10 @@ class LocalUnsafeExecutor(CodeExecutor):
         if not path.exists():
             return "SKIPPED: Target directory for UI tests does not exist."
 
+        install_error = self._ensure_pytest()
+        if install_error:
+            return install_error
+
         ui_tests = self._discover_ui_tests(path)
         if not ui_tests:
             return "SKIPPED: No UI tests found."
@@ -120,7 +154,7 @@ class LocalUnsafeExecutor(CodeExecutor):
         try:
             for test_file in ui_tests:
                 result = subprocess.run(
-                    ["pytest", "-x", str(test_file)],
+                    [sys.executable, "-m", "pytest", "-x", str(test_file)],
                     capture_output=True,
                     text=True,
                     timeout=self.timeout,
@@ -138,6 +172,10 @@ class LocalUnsafeExecutor(CodeExecutor):
         if not path.exists():
             return "SKIPPED: Target directory for coverage does not exist."
 
+        install_error = self._ensure_pytest()
+        if install_error:
+            return install_error
+
         if not self._discover_pytests(path):
             return "SKIPPED: No tests found."
 
@@ -146,7 +184,7 @@ class LocalUnsafeExecutor(CodeExecutor):
             if isinstance(cmd, str):
                 cmd = shlex.split(cmd)
         else:
-            cmd = ["pytest", "--cov=.", "--cov-report=term-missing"]
+            cmd = [sys.executable, "-m", "pytest", "--cov=.", "--cov-report=term-missing"]
 
         try:
             result = subprocess.run(

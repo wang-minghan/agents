@@ -1,6 +1,9 @@
 workflow:
-  max_iterations: 3
+  max_iterations: 2
   validation_threshold: 0.8
+  max_roles: 5
+  max_tasks: 12
+  max_jd_chars: 4000
   snapshot_enabled: true
   snapshot_dir: output/snapshots
 

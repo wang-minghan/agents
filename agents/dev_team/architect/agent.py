@@ -1,4 +1,6 @@
 from typing import Any, Dict, List, Tuple, Optional, Callable
+import os
+import ast
 from pathlib import Path
 from datetime import datetime, timezone
 import json
@@ -75,11 +77,40 @@ def _invoke_with_heartbeat(label: str, func: Callable[[], Any], interval: int = 
         worker.join(timeout=1)
 
 
+def _strip_code_fence(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    cleaned = cleaned.strip("`")
+    newline_idx = cleaned.find("\n")
+    if newline_idx != -1:
+        cleaned = cleaned[newline_idx + 1 :]
+    return cleaned.strip()
+
+def _sanitize_json_text(text: str) -> str:
+    replaced = (
+        text.replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", '"')
+        .replace("’", '"')
+    )
+    return replaced
+
 def _coerce_json(payload: Any) -> Any:
     if isinstance(payload, str):
+        cleaned = _strip_code_fence(payload)
+        cleaned = _sanitize_json_text(cleaned)
         try:
-            return json.loads(payload)
+            return json.loads(cleaned)
         except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                snippet = cleaned[start : end + 1]
+                try:
+                    return json.loads(snippet)
+                except json.JSONDecodeError:
+                    return payload
             return payload
     return payload
 
@@ -133,6 +164,93 @@ def _format_constraints(constraints: Any) -> Optional[str]:
     if isinstance(payload, (dict, list)):
         return json.dumps(payload, ensure_ascii=False, indent=2)
     return str(payload)
+
+def _build_function_inventory(root: Path, max_files: int = 120, max_items: int = 200) -> Dict[str, Any]:
+    skip_dirs = {".git", ".venv", "__pycache__", ".pytest_cache", "output", "data", "evidence"}
+    functions: List[Dict[str, Any]] = []
+    files_scanned = 0
+    root = root.resolve()
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in skip_dirs]
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            files_scanned += 1
+            if files_scanned > max_files:
+                break
+            path = Path(dirpath) / filename
+            rel = str(path.relative_to(root))
+            try:
+                source = path.read_text(encoding="utf-8", errors="ignore")
+                tree = ast.parse(source)
+            except Exception:
+                continue
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    functions.append(
+                        {
+                            "file": rel,
+                            "name": node.name,
+                            "lineno": getattr(node, "lineno", None),
+                            "end_lineno": getattr(node, "end_lineno", None),
+                        }
+                    )
+                elif isinstance(node, ast.ClassDef):
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            functions.append(
+                                {
+                                    "file": rel,
+                                    "name": f"{node.name}.{item.name}",
+                                    "lineno": getattr(item, "lineno", None),
+                                    "end_lineno": getattr(item, "end_lineno", None),
+                                }
+                            )
+            if len(functions) >= max_items:
+                break
+        if files_scanned > max_files or len(functions) >= max_items:
+            break
+
+    return {
+        "root": str(root),
+        "files_scanned": files_scanned,
+        "functions": functions[:max_items],
+    }
+
+def _inject_function_plan(requirements: Dict[str, Any], constraints: Optional[Dict[str, Any]]) -> None:
+    if not isinstance(requirements, dict) or not constraints:
+        return
+    existing_project = constraints.get("existing_project")
+    if not existing_project:
+        return
+    root = Path(str(existing_project))
+    if not root.exists():
+        return
+    if requirements.get("function_inventory"):
+        return
+    inventory = _build_function_inventory(root)
+    requirements["function_inventory"] = inventory
+    requirements.setdefault(
+        "function_plan_rules",
+        [
+            "优先做函数级别的任务拆解，再做目录/模块级规划。",
+            "按 AST/目录结构识别可改动的函数与依赖关系。",
+            "每轮只完成少量函数的可验证改动，避免大范围改写。",
+        ],
+    )
+
+def _limit_tasks_and_roles(
+    tasks: List[Dict[str, Any]],
+    roles: List[Dict[str, Any]],
+    max_tasks: int,
+    max_roles: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if max_tasks > 0 and len(tasks) > max_tasks:
+        tasks = tasks[:max_tasks]
+    if max_roles > 0 and len(roles) > max_roles:
+        roles = roles[:max_roles]
+    return tasks, roles
 
 def _resolve_snapshot_dir(config: Dict[str, Any]) -> Optional[Path]:
     workflow_cfg = config.get("workflow", {})
@@ -188,14 +306,19 @@ def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[st
     if constraints_text:
         user_input += f"\n\n[Constraints]\n{constraints_text}"
 
-    max_iterations = config.get("workflow", {}).get("max_iterations", 3)
-    validation_threshold = config.get("workflow", {}).get("validation_threshold", 0.8)
+    workflow_cfg = config.get("workflow", {})
+    max_iterations = workflow_cfg.get("max_iterations", 3)
+    validation_threshold = workflow_cfg.get("validation_threshold", 0.8)
+    max_roles = int(workflow_cfg.get("max_roles", 5) or 5)
+    max_tasks = int(workflow_cfg.get("max_tasks", 20) or 20)
+    max_jd_chars = int(workflow_cfg.get("max_jd_chars", 4000) or 4000)
     
     if planner_state:
         try:
             requirements = _require_dict("Planner state requirements", planner_state.get("requirements"))
             tasks = planner_state.get("tasks", [])
             roles = planner_state.get("roles", [])
+            tasks, roles = _limit_tasks_and_roles(tasks, roles, max_tasks, max_roles)
             current_role_jds = planner_state.get("current_jds", {})
             if not isinstance(tasks, list) or not isinstance(roles, list) or not isinstance(current_role_jds, dict):
                 raise ValueError("Planner state must include tasks(list), roles(list), current_jds(dict).")
@@ -209,6 +332,7 @@ def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[st
                 "status": "error",
                 "error": f"Planner state invalid: {e}",
             }, config, input_data)
+        _inject_function_plan(requirements, constraints)
         print(">>> 已检测到 planner_state，跳过需求分析与任务拆解，直接继续优化/验证...")
     else:
         # 1. 需求分析
@@ -222,6 +346,7 @@ def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[st
                     lambda: analyzer.invoke({"user_input": user_input, "constraints": constraints}),
                 )
             )
+            _inject_function_plan(requirements, constraints)
             print("\n", flush=True)
         except Exception as e:
             return _finalize_result({
@@ -244,6 +369,7 @@ def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[st
                 "status": "error",
                 "error": f"Task classification failed: {e}"
             }, config, input_data)
+        tasks, roles = _limit_tasks_and_roles(tasks, roles, max_tasks, max_roles)
         print(f"    拆解出 {len(tasks)} 个任务, {len(roles)} 个角色")
     
     # 迭代优化流程
@@ -292,6 +418,8 @@ def run_architect(input_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[st
             for role in roles:
                 role_name = role["role_name"]
                 current_jd_content = current_role_jds.get(role_name, "")
+                if isinstance(current_jd_content, str) and max_jd_chars > 0:
+                    current_jd_content = current_jd_content[:max_jd_chars]
                 current_feedback = f"Overall: {global_feedback}"
                 if role_name in role_specific_feedbacks:
                     current_feedback += f"\nSpecific Advice for {role_name}: {role_specific_feedbacks[role_name]}"

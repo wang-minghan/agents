@@ -1,5 +1,7 @@
 {
-  "generated_at": "2026-01-05T03:36:38Z",
+  "generated_at": "2026-01-05T10:14:04Z",
+  "ui_design": null,
+  "ui_design_summary": null,
   "ui_evidence": null,
   "user_simulation": null,
   "input_contract": {
@@ -11,23 +13,26 @@
     "status": "skipped",
     "summary": "SKIPPED: No tests found."
   },
+  "ui_tests": {
+    "status": "skipped",
+    "summary": "SKIPPED: No UI tests found."
+  },
+  "coverage": {
+    "status": "skipped",
+    "summary": "SKIPPED: No tests found."
+  },
   "bug_cards": [
     {
-      "path": "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/bugs/BUG-2026-01-05T03-34-07Z.json",
+      "path": "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/bugs/BUG-2026-01-05T10-14-04Z.json",
       "reason": "consensus_failed",
       "summary": "门禁失败: consensus_failed",
-      "created_at": "2026-01-05T03:34:07Z"
-    },
-    {
-      "path": "/home/minghan/project/agents/agents/dev_team/output/codebase/evidence/bugs/BUG-2026-01-05T03-36-38Z.json",
-      "reason": "consensus_failed",
-      "summary": "门禁失败: consensus_failed",
-      "created_at": "2026-01-05T03:36:38Z"
+      "created_at": "2026-01-05T10:14:04Z"
     }
   ],
   "files": [
     "manifest.json",
     "collaboration_state.json",
+    "evidence_pack_2026-01-05T03-36-38Z.zip",
     "evidence_pack_2026-01-05T03-34-07Z.zip",
     "docs/design_review_checklist.md",
     "docs/current_state_summary.md",
@@ -36,7 +41,9 @@
     "docs/adr.md.bak",
     "docs/adr.md",
     "bugs/BUG-2026-01-05T03-36-38Z.json",
+    "bugs/BUG-2026-01-05T10-14-04Z.json",
     "bugs/BUG-2026-01-05T03-34-07Z.json",
-    "ast/ast_baseline.md"
+    "ast/ast_baseline.md",
+    "docs/evidence/docs/adr.md"
   ]
 }
